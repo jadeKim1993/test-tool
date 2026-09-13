@@ -1,0 +1,152 @@
+plugins {
+	id 'java'
+	id 'org.springframework.boot' version '4.1.1' apply false
+	id 'io.spring.dependency-management' version '1.1.7' apply false
+}
+
+ext {
+	springBootVersion = '4.1.1'
+}
+
+allprojects {
+	group = 'com.tms'
+	version = '0.0.1-SNAPSHOT'
+
+	// settings.gradle 의 pluginManagement 와 같은 규칙. 자세한 설명은 그쪽 주석 참고.
+	repositories {
+		def repoUrl = (System.getenv('TESTER_REPO_URL')
+				?: providers.gradleProperty('testerRepoUrl').getOrElse('')).toString().trim()
+		if (repoUrl) {
+			maven {
+				url = uri(repoUrl)
+				allowInsecureProtocol = repoUrl.startsWith('http://')
+				def repoUser = System.getenv('TESTER_REPO_USER')
+						?: providers.gradleProperty('testerRepoUser').getOrElse('')
+				if (repoUser) {
+					credentials {
+						username = repoUser
+						password = System.getenv('TESTER_REPO_PASSWORD')
+								?: providers.gradleProperty('testerRepoPassword').getOrElse('')
+					}
+				}
+			}
+		}
+		else {
+			mavenCentral()
+		}
+	}
+}
+
+subprojects {
+	// 프론트엔드 모듈은 자바 빌드 대상이 아니다.
+	if (name == 'tester-frontend') {
+		return
+	}
+
+	apply plugin: 'java-library'
+	apply plugin: 'io.spring.dependency-management'
+
+	java {
+		toolchain {
+			languageVersion = JavaLanguageVersion.of(21)
+		}
+	}
+
+	dependencyManagement {
+		imports {
+			mavenBom "org.springframework.boot:spring-boot-dependencies:${springBootVersion}"
+		}
+	}
+
+	dependencies {
+		compileOnly 'org.projectlombok:lombok'
+		annotationProcessor 'org.projectlombok:lombok'
+		testCompileOnly 'org.projectlombok:lombok'
+		testAnnotationProcessor 'org.projectlombok:lombok'
+
+		testImplementation 'org.junit.jupiter:junit-jupiter'
+		testImplementation 'org.assertj:assertj-core'
+		testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+	}
+
+	tasks.withType(JavaCompile).configureEach {
+		options.encoding = 'UTF-8'
+		options.compilerArgs << '-parameters'
+	}
+
+	tasks.named('test') {
+		useJUnitPlatform {
+			// 성능 벤치마크는 벽시계로 재기 때문에 병렬 빌드에서 CPU 를 나눠 쓰면
+			// 실제 성능과 무관하게 실패한다. 일반 빌드에서는 빼고 perf 태스크로 돌린다.
+			excludeTags 'perf'
+		}
+	}
+
+	tasks.register('perfTest', Test) {
+		description = '성능 벤치마크 (처리량/속도 정확도). 단독 실행 전제'
+		group = 'verification'
+		testClassesDirs = sourceSets.test.output.classesDirs
+		classpath = sourceSets.test.runtimeClasspath
+		useJUnitPlatform {
+			includeTags 'perf'
+		}
+		// 벤치마크끼리도 겹치면 안 된다.
+		maxParallelForks = 1
+		testLogging {
+			showStandardStreams = true
+			events 'passed', 'failed'
+		}
+		outputs.upToDateWhen { false }
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 개발 편의 태스크
+//
+// 백엔드와 프론트엔드는 둘 다 "끝나지 않는" 프로세스라 한 번의 Gradle 실행으로
+// 같이 띄우려면 병렬 실행이 필요하다. dev 태스크는 그래서 --parallel 을 강제한다
+// (gradle.properties 에 org.gradle.parallel=true 를 넣어 두었다).
+// ---------------------------------------------------------------------------
+
+tasks.register('backend') {
+	description = '백엔드만 실행 (http://localhost:8080)'
+	group = 'application'
+	dependsOn ':tester-api:bootRun'
+}
+
+tasks.register('frontend') {
+	description = '프론트엔드 개발 서버만 실행 (http://localhost:5173)'
+	group = 'application'
+	dependsOn ':tester-frontend:npmDev'
+}
+
+tasks.register('dev') {
+	description = '백엔드 + 프론트엔드 동시 실행. 브라우저는 http://localhost:5173 으로 접속'
+	group = 'application'
+	dependsOn ':tester-api:bootRun', ':tester-frontend:npmDev'
+
+	doFirst {
+		if (!gradle.startParameter.parallelProjectExecutionEnabled) {
+			throw new GradleException(
+					"dev 태스크는 병렬 실행이 필요합니다. './gradlew dev --parallel' 로 실행하거나\n" +
+					"gradle.properties 에 org.gradle.parallel=true 를 추가하세요.")
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 성능 벤치마크
+//
+// 처리량은 벽시계로 재므로 다른 작업과 CPU 를 나눠 쓰면 값이 눌린다. 일반 build 에서는
+// 제외(@Tag("perf"))하고, 이 태스크로 모듈을 하나씩 순서대로 돌린다.
+// ---------------------------------------------------------------------------
+tasks.register('perf') {
+	description = '성능 벤치마크 실행 (렌더링 처리량, TCP/UDP 10만 EPS, 속도 정확도)'
+	group = 'verification'
+	dependsOn ':tester-generator:perfTest', ':tester-transport:perfTest'
+}
+
+// 두 모듈의 벤치마크가 동시에 돌면 서로를 눌러버린다.
+project(':tester-transport').tasks.named('perfTest') {
+	mustRunAfter project(':tester-generator').tasks.named('perfTest')
+}

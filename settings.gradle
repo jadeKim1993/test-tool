@@ -1,0 +1,44 @@
+// 의존성 저장소 선택 — 인터넷망과 내부망(폐쇄망) 양쪽을 같은 소스로 빌드하기 위한 스위치.
+//
+//   내부망:  ./gradlew build -PtesterRepoUrl=https://test.com/repository/maven-public/
+//            또는 gradle.properties / TESTER_REPO_URL 환경변수에 지정
+//   인터넷:  아무것도 지정하지 않으면 Gradle Plugin Portal + Maven Central 을 쓴다
+//
+// 내부망 URL 이 주어지면 공개 저장소는 **아예 목록에 넣지 않는다**. 폐쇄망에서 Central 을
+// 남겨 두면 매 빌드마다 연결 시도 후 타임아웃을 기다리느라 빌드가 느려지기 때문이다.
+// pluginManagement 는 settings.gradle 의 첫 블록이어야 해서 아래 로직이 두 번 나온다.
+pluginManagement {
+	repositories {
+		def repoUrl = (System.getenv('TESTER_REPO_URL')
+				?: providers.gradleProperty('testerRepoUrl').getOrElse('')).toString().trim()
+		if (repoUrl) {
+			maven {
+				url = uri(repoUrl)
+				// 사내 미러가 http 인 경우가 흔하다. Gradle 7+ 는 명시하지 않으면 거부한다.
+				allowInsecureProtocol = repoUrl.startsWith('http://')
+				def repoUser = System.getenv('TESTER_REPO_USER')
+						?: providers.gradleProperty('testerRepoUser').getOrElse('')
+				if (repoUser) {
+					credentials {
+						username = repoUser
+						password = System.getenv('TESTER_REPO_PASSWORD')
+								?: providers.gradleProperty('testerRepoPassword').getOrElse('')
+					}
+				}
+			}
+		}
+		else {
+			gradlePluginPortal()
+			mavenCentral()
+		}
+	}
+}
+
+rootProject.name = 'tester'
+
+include 'tester-common'
+include 'tester-domain'
+include 'tester-generator'
+include 'tester-transport'
+include 'tester-api'
+include 'tester-frontend'

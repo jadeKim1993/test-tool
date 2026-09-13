@@ -1,0 +1,37 @@
+# 로그 수신 테스트 서버 — 로컬 개발 환경(`./gradlew dev`)에서 만든 로그를 실제로 받아 확인한다.
+#
+# 사용법:
+#   cd tools/log-sink
+#   docker compose up -d --build
+#
+# 기본 포트는 9000/TCP, 5514/UDP 다. 앱의 전송 대상 화면에서
+# "TCP 127.0.0.1:9000" 또는 "UDP 127.0.0.1:5514" 를 한 번 추가하면 바로 전송 테스트를 할 수 있다
+# (신규 가입 시 자동 시드되는 기본 대상은 예제용 사설 IP 라 이 sink 를 가리키지 않는다).
+#
+# 대시보드: http://localhost:8090
+# 종료:     docker compose down
+
+name: tester-log-sink
+
+services:
+  log-sink:
+    build: .
+    image: tester-log-sink:local
+    container_name: tester-log-sink
+    restart: unless-stopped
+    environment:
+      TCP_PORT: "9000"
+      UDP_PORT: "5514"
+      HTTP_PORT: "8090"
+      MAX_RECENT: ${SINK_MAX_RECENT:-50}
+    ports:
+      # 호스트 쪽 포트만 .env 로 바꿀 수 있게 열어 둔다(컨테이너 내부 포트는 위 environment 와 맞춘다).
+      - "${SINK_TCP_PORT:-9000}:9000/tcp"
+      - "${SINK_UDP_PORT:-5514}:5514/udp"
+      - "${SINK_HTTP_PORT:-8090}:8090/tcp"
+    healthcheck:
+      test: ["CMD", "java", "LogSink", "--healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s

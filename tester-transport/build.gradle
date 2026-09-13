@@ -1,0 +1,15 @@
+dependencies {
+	api project(':tester-generator')
+	api 'io.netty:netty-transport'
+	api 'io.netty:netty-handler'
+	// Linux 에서는 epoll 네이티브 전송을 사용해 syscall 비용을 줄인다.
+	api 'io.netty:netty-transport-native-epoll'
+	runtimeOnly 'io.netty:netty-transport-native-epoll::linux-x86_64'
+	runtimeOnly 'io.netty:netty-transport-native-epoll::linux-aarch_64'
+	implementation 'org.slf4j:slf4j-api'
+}
+
+// 테스트에서 워커 예외 로그가 삼켜지지 않도록 바인딩을 붙인다.
+dependencies {
+	testRuntimeOnly 'org.slf4j:slf4j-simple'
+}

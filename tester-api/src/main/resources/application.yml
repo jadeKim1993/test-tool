@@ -1,0 +1,64 @@
+spring:
+  application:
+    name: tester
+  datasource:
+    # 파일 기반 H2. 애플리케이션을 재시작해도 템플릿/대상/작업 설정이 유지된다.
+    url: jdbc:h2:file:./data/tester;AUTO_SERVER=TRUE;DB_CLOSE_DELAY=-1
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          batch_size: 50
+  threads:
+    virtual:
+      # 관리 API 는 가상 스레드로 처리한다. 부하 엔진은 별도 플랫폼 스레드를 쓴다.
+      enabled: true
+  mvc:
+    async:
+      # SSE 는 무제한 유지한다.
+      request-timeout: -1
+
+server:
+  port: 8080
+  compression:
+    enabled: true
+    mime-types: application/json,text/event-stream
+
+tester:
+  jwt:
+    # 운영에서는 반드시 TESTER_JWT_SECRET 환경변수로 32자 이상 지정할 것.
+    secret: ${TESTER_JWT_SECRET:}
+    ttl: PT12H
+    refresh-threshold: PT2H
+  engine:
+    # 0 이면 CPU 코어 수
+    io-threads: 0
+    max-concurrent-jobs: 20
+    # 전체 작업 EPS 합계 상한(안전장치). 0 이면 무제한
+    max-total-eps: 2000000
+    metrics-interval: PT1S
+    # 메모리 보관 샘플 수 (1800 = 30분)
+    history-size: 1800
+  security:
+    allow-signup: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+
+logging:
+  level:
+    com.tms.tester: INFO
+    # 핫패스 로깅은 성능에 직접 영향을 준다. DEBUG 로 낮추지 말 것.
+    com.tms.tester.transport.GeneratorWorker: INFO

@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/theme.tsx","./src/api/client.ts","./src/api/types.ts","./src/components/epschart.tsx","./src/components/epscontrol.tsx","./src/components/common.tsx","./src/hooks/usemetricsstream.ts","./src/pages/login.tsx","./src/pages/sendconsole.tsx","./src/pages/targets.tsx","./src/pages/templates.tsx"],"version":"5.6.3"}

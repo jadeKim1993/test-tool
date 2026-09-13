@@ -1,0 +1,49 @@
+# 내부망(폐쇄망) 전용 컴포즈 — 이미지를 **빌드하지 않고 내부 레지스트리에서 받아서** 띄운다.
+#
+# 전제: 인터넷이 되는 곳에서 이미지를 만들어 내부 레지스트리(기본 192.168.70.114:5000)에
+#      올려 둔 상태. 올리는 방법은 deploy/push-internal.sh 참고.
+#
+# 사용법(내부망 서버에서):
+#   cp .env.example .env      # TESTER_JWT_SECRET 채우기, 필요하면 REGISTRY/TAG 조정
+#   docker compose -f docker-compose.internal.yml pull
+#   docker compose -f docker-compose.internal.yml up -d
+#   → http://<서버>:${FRONTEND_PORT:-80}
+#
+# 종료: docker compose -f docker-compose.internal.yml down      (데이터 유지)
+#       docker compose -f docker-compose.internal.yml down -v   (데이터까지 삭제)
+#
+# 레지스트리가 https 가 아니면 각 도커 호스트의 /etc/docker/daemon.json 에
+#   { "insecure-registries": ["192.168.70.114:5000"] }
+# 를 넣고 도커를 재시작해야 pull 이 된다.
+
+services:
+  backend:
+    image: ${REGISTRY:-192.168.70.114:5000}/tester-api:${TAG:-latest}
+    pull_policy: always
+    restart: unless-stopped
+    environment:
+      TESTER_JWT_SECRET: ${TESTER_JWT_SECRET:-}
+    volumes:
+      - tester-data:/app/data
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    healthcheck:
+      # 이미지에 curl 이 없다(폐쇄망에서 apt 미러가 필요 없도록 뺐다). JDK 내장 클라이언트를 쓴다.
+      test: ["CMD", "java", "-cp", "/app/health", "HealthCheck"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  frontend:
+    image: ${REGISTRY:-192.168.70.114:5000}/tester-frontend:${TAG:-latest}
+    pull_policy: always
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+
+volumes:
+  tester-data:

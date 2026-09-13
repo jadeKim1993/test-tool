@@ -1,0 +1,86 @@
+/*
+ * 프론트엔드 빌드 연동.
+ *
+ * node-gradle 플러그인 대신 시스템에 설치된 npm 을 직접 호출한다.
+ * 플러그인은 빌드 때마다 Node 배포본을 내려받으려 하는데, 폐쇄망에서는
+ * 그게 곧 빌드 실패이기 때문이다. 빌드 장비에 Node 22+ 를 미리 설치해 둔다.
+ */
+
+def npmCommand = org.gradle.internal.os.OperatingSystem.current().isWindows() ? 'npm.cmd' : 'npm'
+
+// 사내 npm 미러. 비우면 registry.npmjs.org 를 쓴다(settings.gradle 의 testerRepoUrl 과 같은 방식).
+//   ./gradlew dev -PnpmRegistry=https://test.com/repository/npm-public/
+//   또는 gradle.properties / NPM_REGISTRY 환경변수
+def npmRegistry = (System.getenv('NPM_REGISTRY')
+		?: providers.gradleProperty('npmRegistry').getOrElse('')).toString().trim()
+
+tasks.register('npmInstall', Exec) {
+	description = '프론트엔드 의존성 설치'
+	group = 'frontend'
+	workingDir = projectDir
+	// package-lock.json 이 있으면 재현 가능한 설치(ci)를 쓴다.
+	def args = [npmCommand, file('package-lock.json').exists() ? 'ci' : 'install', '--no-audit', '--no-fund']
+	if (npmRegistry) {
+		args += "--registry=${npmRegistry}".toString()
+	}
+	commandLine args
+
+	inputs.file('package.json')
+	inputs.file('package-lock.json').optional()
+	outputs.dir('node_modules')
+
+	// 폐쇄망에서 node_modules 를 미리 반입해 둔 경우를 위한 탈출구.
+	// npm ci 는 node_modules 를 지우고 레지스트리에서 다시 받으므로, 그대로 두면
+	// 반입해 둔 의존성을 날리고 실패한다. --offline 이면 있는 걸 그대로 쓴다.
+	onlyIf {
+		if (gradle.startParameter.offline && file('node_modules').isDirectory()) {
+			logger.lifecycle('[frontend] --offline: 이미 있는 node_modules 를 그대로 쓴다(npm 설치 건너뜀)')
+			return false
+		}
+		true
+	}
+}
+
+tasks.register('npmBuild', Exec) {
+	description = 'React SPA 빌드 (dist/)'
+	group = 'frontend'
+	dependsOn 'npmInstall'
+	workingDir = projectDir
+	commandLine npmCommand, 'run', 'build'
+
+	inputs.dir('src')
+	inputs.file('package.json')
+	inputs.file('vite.config.ts')
+	inputs.file('index.html')
+	outputs.dir('dist')
+}
+
+tasks.register('npmDev', Exec) {
+	description = 'Vite 개발 서버 (핫리로드). /api 는 localhost:8080 으로 프록시된다'
+	group = 'application'
+	dependsOn 'npmInstall'
+	workingDir = projectDir
+	commandLine npmCommand, 'run', 'dev'
+	// 개발 서버는 끝나지 않는다. Ctrl+C 로 멈출 때 실패로 표시하지 않는다.
+	ignoreExitValue = true
+}
+
+tasks.register('frontendZip', Zip) {
+	description = 'nginx 배포용 압축본'
+	group = 'frontend'
+	dependsOn 'npmBuild'
+	from 'dist'
+	archiveFileName = 'frontend.zip'
+	destinationDirectory = layout.buildDirectory.dir('distributions')
+}
+
+tasks.register('build') {
+	description = '루트 build 에서 함께 호출된다'
+	group = 'build'
+	dependsOn 'frontendZip'
+}
+
+tasks.register('clean', Delete) {
+	group = 'build'
+	delete 'dist', 'build'
+}

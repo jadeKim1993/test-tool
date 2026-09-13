@@ -1,0 +1,24 @@
+# 백엔드 이미지 빌드 컨텍스트(저장소 루트)에서 제외할 것들.
+# 프론트엔드는 별도 컨텍스트(tester-frontend/)라 tester-frontend/.dockerignore 를 따로 둔다.
+
+.git/
+.gradle/
+.vscode/
+.idea/
+*.iml
+
+**/build/
+**/data/
+**/bin/
+**/out/
+
+tester-frontend/node_modules/
+tester-frontend/dist/
+
+docs/
+README.md
+*.md
+
+# deploy/ 는 대부분 이미지에 필요 없지만 HEALTHCHECK 용 소스 한 개만 예외로 넣는다.
+deploy/*
+!deploy/HealthCheck.java

@@ -1,0 +1,5 @@
+dependencies {
+	api project(':tester-common')
+	// Spring 비의존: 버퍼 조작만 netty-buffer 를 사용한다.
+	api 'io.netty:netty-buffer'
+}
