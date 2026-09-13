@@ -135,23 +135,51 @@ docker build -t tester-frontend tester-frontend/
 
 ## 내부망(폐쇄망) 배포
 
-### 의존성 저장소
+### 로컬 개발(`./gradlew dev`)을 폐쇄망에서
 
-Gradle 은 기본적으로 Maven Central + Plugin Portal 을 쓰고, **내부 미러 URL 을 주면 그쪽만** 본다
-(폐쇄망에서 공개 저장소를 목록에 남겨 두면 매 빌드마다 타임아웃을 기다리게 된다).
+한 번에 전환한다(되돌리기는 `--revert`):
+
+```bash
+./deploy/use-internal-mirror.sh
+./gradlew dev
+```
+
+스크립트가 `gradle.properties` 의 `testerRepoUrl`(Maven)과 `npmRegistry`(npm)를 채운다.
+기본값은 `https://test.com/repository/...` 이고 환경변수로 덮어쓸 수 있다
+(`TESTER_REPO_URL`, `NPM_REGISTRY`, `GRADLE_DIST_URL`).
+
+`dev` 가 네트워크를 쓰는 지점은 셋뿐이고, 각각 이렇게 해결한다:
+
+| 무엇 | 기본 동작 | 폐쇄망에서 |
+|---|---|---|
+| Gradle 의존성 | Maven Central | `testerRepoUrl` 이 있으면 **그 미러만** 본다 |
+| npm 의존성 | registry.npmjs.org | `npmRegistry` 를 `npm ci --registry=` 로 넘긴다 |
+| Gradle 배포본 | services.gradle.org | 이미 받아 둔 캐시(`~/.gradle/wrapper/dists`)를 쓰거나, 미러가 zip 을 서빙하면 `--with-gradle-dist` |
+
+```bash
+./deploy/use-internal-mirror.sh --with-gradle-dist   # Gradle 배포본까지 사내 미러에서
+./gradlew dev --offline                              # 이미 다 받아 둔 상태 — 네트워크 접근 0
+```
+
+- `--offline` 은 `node_modules` 가 이미 있으면 **npm 설치를 건너뛴다**. `npm ci` 는 `node_modules`
+  를 지우고 다시 받으므로, 의존성을 반입해 둔 장비에서는 이 플래그가 없으면 오히려 깨진다.
+- **주의**: 미러를 바꾼 직후 첫 빌드는 미러에 실제로 닿아야 한다. Gradle 캐시는 저장소별로
+  묶이기 때문에, 인터넷에서 받아 둔 캐시가 있어도 `--offline` 만으로는 새 미러 기준 해석이 안 된다.
+  `--with-gradle-dist` 를 쓰면 wrapper 캐시도 무효화되므로 미러가 그 zip 을 갖고 있어야 한다.
+
+### 의존성 저장소 (직접 지정)
+
+| 지정 방법 | 예 |
+|---|---|
+| 커맨드라인 | `-PtesterRepoUrl=... -PtesterRepoUser=... -PtesterRepoPassword=... -PnpmRegistry=...` |
+| 환경변수 | `TESTER_REPO_URL` / `TESTER_REPO_USER` / `TESTER_REPO_PASSWORD` / `NPM_REGISTRY` |
+| 파일 | `gradle.properties` 의 `testerRepoUrl` · `npmRegistry` |
 
 ```bash
 ./gradlew build -PtesterRepoUrl=https://test.com/repository/maven-public/
 ```
 
-| 지정 방법 | 예 |
-|---|---|
-| 커맨드라인 | `-PtesterRepoUrl=... -PtesterRepoUser=... -PtesterRepoPassword=...` |
-| 환경변수 | `TESTER_REPO_URL` / `TESTER_REPO_USER` / `TESTER_REPO_PASSWORD` |
-| 파일 | `gradle.properties` 의 `testerRepoUrl` 주석 해제 |
-
 `http://` 미러도 그대로 쓸 수 있다(Gradle 7+ 가 요구하는 `allowInsecureProtocol` 을 자동으로 켠다).
-프론트엔드 npm 은 `npm config set registry <사내 미러>` 또는 아래 이미지 빌드 인자로 지정한다.
 
 ### 이미지 빌드 → 내부 레지스트리 푸시
 

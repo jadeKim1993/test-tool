@@ -1393,6 +1393,28 @@ alter table send_targets drop column if exists encoding;
 폐쇄망에서 미러만 보게 한 이유는 단순히 "빌드 성공" 때문이 아니다. Central 을 목록에 남기면
 매 의존성마다 연결 시도 → 타임아웃을 기다려 빌드가 몇 배로 느려진다.
 
+**로컬 개발(`./gradlew dev`)도 같은 스위치로 돈다.** `dev` 가 네트워크를 쓰는 지점은 셋이고,
+`deploy/use-internal-mirror.sh` 가 한 번에 전환한다(`--revert` 로 복구).
+
+| 지점 | 해결 |
+|---|---|
+| Gradle 의존성 | `testerRepoUrl` (위와 동일) |
+| npm 의존성 | `npmRegistry` → `tester-frontend/build.gradle` 이 `npm ci --registry=` 로 넘긴다 |
+| Gradle 배포본 | 기본은 **건드리지 않는다**. `--with-gradle-dist` 를 줄 때만 `distributionUrl` 을 미러로 바꾼다 |
+
+배포본 교체를 기본값에서 뺀 이유: `distributionUrl` 을 바꾸는 순간 `~/.gradle/wrapper/dists` 의
+기존 캐시가 무효가 되어 **미러가 그 zip 을 실제로 서빙해야만** `gradlew` 가 뜬다. 배포본을 이미
+받아 둔 장비가 훨씬 흔하므로 그대로 두는 쪽을 기본으로 했다.
+
+`npmInstall` 에는 `--offline` 탈출구를 뒀다. `npm ci` 는 `node_modules` 를 지우고 레지스트리에서
+다시 받기 때문에, 의존성을 미리 반입해 둔 폐쇄망 장비에서 그냥 돌리면 오히려 멀쩡한 설치를
+날린다. `--offline` 이고 `node_modules` 가 있으면 설치를 건너뛴다.
+
+한 가지 더: 미러를 바꾼 직후 첫 빌드는 미러에 실제로 닿아야 한다. Gradle 의 의존성 캐시는
+저장소 단위로 묶여 있어서, 인터넷에서 받아 둔 캐시가 있어도 `--offline` 만으로 새 미러 기준
+해석이 되지는 않는다(검증 중 실제로 확인했다 — `test.com` 으로 바꾼 뒤 `--offline` 은
+Spring Boot 플러그인을 찾지 못했다).
+
 **이미지에서 curl 을 뺐다.** 헬스체크 때문에 `apt-get install curl` 이 들어 있었는데, 폐쇄망에서는
 이것 하나 때문에 apt 미러까지 준비해야 했다. 빌드 단계에서 `deploy/HealthCheck.java` 를 컴파일해
 넣고 JDK 내장 `HttpClient` 로 확인하도록 바꿨다(`tools/log-sink` 의 `--healthcheck` 와 같은 접근).
