@@ -1400,11 +1400,27 @@ alter table send_targets drop column if exists encoding;
 |---|---|
 | Gradle 의존성 | `testerRepoUrl` (위와 동일) |
 | npm 의존성 | `npmRegistry` → `tester-frontend/build.gradle` 이 `npm ci --registry=` 로 넘긴다 |
-| Gradle 배포본 | 기본은 **건드리지 않는다**. `--with-gradle-dist` 를 줄 때만 `distributionUrl` 을 미러로 바꾼다 |
+| Gradle 배포본 | `gradlew` 가 실행 시점에 분기한다(아래) |
 
-배포본 교체를 기본값에서 뺀 이유: `distributionUrl` 을 바꾸는 순간 `~/.gradle/wrapper/dists` 의
-기존 캐시가 무효가 되어 **미러가 그 zip 을 실제로 서빙해야만** `gradlew` 가 뜬다. 배포본을 이미
-받아 둔 장비가 훨씬 흔하므로 그대로 두는 쪽을 기본으로 했다.
+**배포본 분기는 `gradlew` 안에서 한다.** wrapper 는 `distributionUrl` 을 properties 파일에서만
+읽고 환경변수/시스템 프로퍼티 오버라이드를 지원하지 않는다(wrapper jar 를 뜯어 확인했다 —
+읽는 환경변수는 `GRADLE_USER_HOME` 뿐이다). 그래서 `gradlew`/`gradlew.bat` 에 분기를 넣었다:
+
+1. `TESTER_GRADLE_DIST_URL` 환경변수
+2. `gradle.properties` 의 `gradleDistUrl`
+3. 둘 다 없으면 커밋된 `distributionUrl`(공개 저장소) 그대로 — **사본도 만들지 않는다**
+
+값이 있을 때만 `build/wrapper/` 에 wrapper jar 사본 + 수정된 properties 를 만들어 그쪽을
+실행한다. wrapper 가 properties 를 **jar 옆에서** 찾기 때문에 통하는 방법이다. 커밋된
+`gradle/wrapper/gradle-wrapper.properties` 는 어느 경우에도 수정되지 않는다 — 인터넷망과
+폐쇄망이 같은 파일을 공유하면서 각자 다른 배포본을 쓰게 하는 것이 목적이었다.
+
+> `./gradlew wrapper` 로 Gradle 을 업그레이드하면 `gradlew` 가 재생성되어 이 블록이 사라진다.
+> 업그레이드 후에는 분기 블록을 다시 넣어야 한다.
+
+주의: 배포본 주소를 바꾸는 순간 `~/.gradle/wrapper/dists` 의 기존 캐시가 무효가 되어
+**미러가 그 zip 을 실제로 서빙해야만** `gradlew` 가 뜬다. 그래서 전환 스크립트에서도
+`gradleDistUrl` 설정은 `--with-gradle-dist` 로만 켠다.
 
 `npmInstall` 에는 `--offline` 탈출구를 뒀다. `npm ci` 는 `node_modules` 를 지우고 레지스트리에서
 다시 받기 때문에, 의존성을 미리 반입해 둔 폐쇄망 장비에서 그냥 돌리면 오히려 멀쩡한 설치를

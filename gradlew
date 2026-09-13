@@ -208,9 +208,50 @@ DEFAULT_JVM_OPTS='"-Xmx64m" "-Xms64m"'
 #   * For example: A user cannot expect ${Hostname} to be expanded, as it is an environment variable and will be
 #     treated as '${Hostname}' itself on the command line.
 
+# ---------------------------------------------------------------------------
+# 내부망(폐쇄망) 분기 — 이 프로젝트 추가분.
+#
+# Gradle wrapper 는 배포본 주소를 gradle-wrapper.properties 의 distributionUrl 에서만 읽고
+# 환경변수/시스템 프로퍼티 오버라이드를 지원하지 않는다. 그래서 여기서 갈라 준다:
+#
+#   1) TESTER_GRADLE_DIST_URL 환경변수
+#   2) gradle.properties 의 gradleDistUrl
+#   3) 둘 다 없으면 커밋된 distributionUrl(공개 저장소) 그대로
+#
+# 커밋된 파일을 건드리지 않도록, 값이 있으면 build/wrapper 에 wrapper 사본 + 수정된
+# properties 를 만들어 그쪽을 실행한다(wrapper 는 properties 를 jar 옆에서 찾는다).
+# ---------------------------------------------------------------------------
+WRAPPER_JAR=$APP_HOME/gradle/wrapper/gradle-wrapper.jar
+
+tester_dist_url=${TESTER_GRADLE_DIST_URL:-}
+if [ -z "$tester_dist_url" ] && [ -f "$APP_HOME/gradle.properties" ]; then
+    tester_dist_url=$(
+        sed -n 's/^[[:space:]]*gradleDistUrl[[:space:]]*=[[:space:]]*//p' "$APP_HOME/gradle.properties" \
+            | head -1 | tr -d '[:space:]'
+    )
+fi
+
+if [ -n "$tester_dist_url" ]; then
+    tester_wrapper_dir=$APP_HOME/build/wrapper
+    if mkdir -p "$tester_wrapper_dir" 2>/dev/null; then
+        sed "s|^distributionUrl=.*|distributionUrl=$tester_dist_url|" \
+            "$APP_HOME/gradle/wrapper/gradle-wrapper.properties" \
+            > "$tester_wrapper_dir/gradle-wrapper.properties.tmp" 2>/dev/null &&
+        if ! cmp -s "$tester_wrapper_dir/gradle-wrapper.properties.tmp" \
+                    "$tester_wrapper_dir/gradle-wrapper.properties" 2>/dev/null; then
+            mv -f "$tester_wrapper_dir/gradle-wrapper.properties.tmp" \
+                  "$tester_wrapper_dir/gradle-wrapper.properties"
+        else
+            rm -f "$tester_wrapper_dir/gradle-wrapper.properties.tmp"
+        fi
+        cp -f "$APP_HOME/gradle/wrapper/gradle-wrapper.jar" "$tester_wrapper_dir/gradle-wrapper.jar" 2>/dev/null &&
+            WRAPPER_JAR=$tester_wrapper_dir/gradle-wrapper.jar
+    fi
+fi
+
 set -- \
         "-Dorg.gradle.appname=$APP_BASE_NAME" \
-        -jar "$APP_HOME/gradle/wrapper/gradle-wrapper.jar" \
+        -jar "$WRAPPER_JAR" \
         "$@"
 
 # Stop when "xargs" is not available.

@@ -154,13 +154,22 @@ docker build -t tester-frontend tester-frontend/
 |---|---|---|
 | Gradle 의존성 | Maven Central | `testerRepoUrl` 이 있으면 **그 미러만** 본다 |
 | npm 의존성 | registry.npmjs.org | `npmRegistry` 를 `npm ci --registry=` 로 넘긴다 |
-| Gradle 배포본 | services.gradle.org | 이미 받아 둔 캐시(`~/.gradle/wrapper/dists`)를 쓰거나, 미러가 zip 을 서빙하면 `--with-gradle-dist` |
+| Gradle 배포본 | services.gradle.org | `gradleDistUrl`(또는 `TESTER_GRADLE_DIST_URL`)이 있으면 `gradlew` 가 그 주소에서 받는다 |
 
 ```bash
 ./deploy/use-internal-mirror.sh --with-gradle-dist   # Gradle 배포본까지 사내 미러에서
 ./gradlew dev --offline                              # 이미 다 받아 둔 상태 — 네트워크 접근 0
 ```
 
+- **Gradle 배포본 분기**: wrapper 는 `distributionUrl` 을 파일에서만 읽고 환경변수 오버라이드가
+  없다. 그래서 `gradlew`/`gradlew.bat` 이 실행 시점에 ① `TESTER_GRADLE_DIST_URL` → ②
+  `gradle.properties` 의 `gradleDistUrl` → ③ 없으면 커밋된 값(공개) 순으로 고르고, 값이 있을 때만
+  `build/wrapper/` 에 wrapper 사본과 수정된 properties 를 만들어 그쪽을 실행한다.
+  **커밋된 `gradle/wrapper/gradle-wrapper.properties` 는 건드리지 않는다.**
+
+  ```bash
+  TESTER_GRADLE_DIST_URL=https://test.com/repository/gradle-dist/gradle-9.7.1-bin.zip ./gradlew dev
+  ```
 - `--offline` 은 `node_modules` 가 이미 있으면 **npm 설치를 건너뛴다**. `npm ci` 는 `node_modules`
   를 지우고 다시 받으므로, 의존성을 반입해 둔 장비에서는 이 플래그가 없으면 오히려 깨진다.
 - **주의**: 미러를 바꾼 직후 첫 빌드는 미러에 실제로 닿아야 한다. Gradle 캐시는 저장소별로
@@ -173,7 +182,7 @@ docker build -t tester-frontend tester-frontend/
 |---|---|
 | 커맨드라인 | `-PtesterRepoUrl=... -PtesterRepoUser=... -PtesterRepoPassword=... -PnpmRegistry=...` |
 | 환경변수 | `TESTER_REPO_URL` / `TESTER_REPO_USER` / `TESTER_REPO_PASSWORD` / `NPM_REGISTRY` |
-| 파일 | `gradle.properties` 의 `testerRepoUrl` · `npmRegistry` |
+| 파일 | `gradle.properties` 의 `testerRepoUrl` · `npmRegistry` · `gradleDistUrl` |
 
 ```bash
 ./gradlew build -PtesterRepoUrl=https://test.com/repository/maven-public/

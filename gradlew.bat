@@ -70,12 +70,39 @@ echo location of your Java installation. 1>&2
 :execute
 @rem Setup the command line
 
+@rem ---------------------------------------------------------------------------
+@rem 내부망(폐쇄망) 분기 - 이 프로젝트 추가분. 자세한 설명은 gradlew(sh) 쪽 주석 참고.
+@rem   1) TESTER_GRADLE_DIST_URL 환경변수  2) gradle.properties 의 gradleDistUrl  3) 없으면 기본
+@rem 커밋된 gradle-wrapper.properties 는 건드리지 않고 build\wrapper 에 사본을 만든다.
+@rem ---------------------------------------------------------------------------
+set WRAPPER_JAR=%APP_HOME%\gradle\wrapper\gradle-wrapper.jar
+set TESTER_DIST_URL=%TESTER_GRADLE_DIST_URL%
+if not defined TESTER_DIST_URL (
+    if exist "%APP_HOME%\gradle.properties" (
+        for /f "usebackq tokens=1,* delims==" %%a in (`findstr /b /r /c:"[ ]*gradleDistUrl[ ]*=" "%APP_HOME%\gradle.properties"`) do (
+            if not defined TESTER_DIST_URL set TESTER_DIST_URL=%%b
+        )
+    )
+)
+if defined TESTER_DIST_URL (
+    if not exist "%APP_HOME%\build\wrapper" mkdir "%APP_HOME%\build\wrapper" >NUL 2>&1
+    if exist "%APP_HOME%\build\wrapper" (
+        copy /y "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" "%APP_HOME%\build\wrapper\gradle-wrapper.jar" >NUL 2>&1
+        > "%APP_HOME%\build\wrapper\gradle-wrapper.properties" (
+            for /f "usebackq delims=" %%l in ("%APP_HOME%\gradle\wrapper\gradle-wrapper.properties") do (
+                echo %%l| findstr /b /c:"distributionUrl=" >NUL && (echo distributionUrl=%TESTER_DIST_URL%) || (echo %%l)
+            )
+        )
+        set WRAPPER_JAR=%APP_HOME%\build\wrapper\gradle-wrapper.jar
+    )
+)
+
 
 
 @rem Execute gradlew
 @rem endlocal doesn't take effect until after the line is parsed and variables are expanded
 @rem which allows us to clear the local environment before executing the java command
-endlocal & "%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -jar "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" %* & call :exitWithErrorLevel
+endlocal & "%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -jar "%WRAPPER_JAR%" %* & call :exitWithErrorLevel
 
 :exitWithErrorLevel
 @rem Use "%COMSPEC%" /c exit to allow operators to work properly in scripts
