@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# 로컬 개발 환경을 내부망(폐쇄망) 모드로 전환한다. `./gradlew dev` 가 인터넷 없이 돌게 하는 게 목적.
+# 이 저장소를 내부망(폐쇄망) 모드로 전환한다. 한 번 돌려 두면 빌드·개발·이미지 푸시가
+# 전부 같은 값을 쓴다(deploy/push-internal.sh 에 미러 주소를 다시 줄 필요가 없다).
 #
-#   ./deploy/use-internal-mirror.sh                      # Maven·npm 미러만 설정(대부분 이걸로 충분)
-#   ./deploy/use-internal-mirror.sh --with-gradle-dist   # Gradle 배포본까지 사내 미러에서
-#   ./deploy/use-internal-mirror.sh --revert             # 공개 저장소로 되돌리기
+#   ./deploy/use-internal-mirror.sh                          # Maven·npm 미러 설정
+#   ./deploy/use-internal-mirror.sh --with-gradle-dist       # Gradle 배포본까지 사내 미러에서
+#   ./deploy/use-internal-mirror.sh -r 192.168.70.114:5000   # 도커 레지스트리도 같이 기록
+#   ./deploy/use-internal-mirror.sh --revert                 # 공개 저장소로 되돌리기
 #
 # 기본값은 환경변수로 덮어쓸 수 있다:
-#   TESTER_REPO_URL   사내 Maven 미러      (기본 https://test.com/repository/maven-public/)
-#   NPM_REGISTRY      사내 npm 미러        (기본 https://test.com/repository/npm-public/)
-#   GRADLE_DIST_URL   사내 Gradle 배포본    (기본 https://test.com/repository/gradle-dist/gradle-9.7.1-bin.zip)
+#   TESTER_REPO_URL / NPM_REGISTRY / GRADLE_DIST_URL / REGISTRY / TAG
 #
-# 건드리는 파일은 gradle.properties 하나뿐이다(testerRepoUrl / npmRegistry / gradleDistUrl).
-# gradle/wrapper/gradle-wrapper.properties 는 커밋 상태 그대로 두고, gradlew 가 실행 시점에
-# gradleDistUrl 을 보고 build/wrapper 에 사본을 만들어 분기한다.
+# 기록하는 곳(= Gradle 과 다른 스크립트가 읽는 곳):
+#   gradle.properties  testerRepoUrl / npmRegistry / gradleDistUrl
+#   .env               REGISTRY / TAG          (-r 을 줬을 때만)
 #
 # ※ gradleDistUrl 은 --with-gradle-dist 로만 설정한다. 배포본 주소를 바꾸는 순간
 #   ~/.gradle/wrapper/dists 의 기존 캐시가 무효가 되어 **미러가 그 zip 을 실제로 서빙해야만**
@@ -21,21 +21,32 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-MAVEN_MIRROR="${TESTER_REPO_URL:-https://test.com/repository/maven-public/}"
-NPM_MIRROR="${NPM_REGISTRY:-https://test.com/repository/npm-public/}"
-GRADLE_VERSION="$(sed -n 's/.*gradle-\([0-9.]*\)-bin\.zip/\1/p' gradle/wrapper/gradle-wrapper.properties)"
-GRADLE_DIST="${GRADLE_DIST_URL:-https://test.com/repository/gradle-dist/gradle-${GRADLE_VERSION}-bin.zip}"
-
 PROPS=gradle.properties
-WRAPPER=gradle/wrapper/gradle-wrapper.properties
+ENV_FILE=.env
 
-set_prop() { # set_prop <키> <값>
-	local key="$1" value="$2"
-	# 주석 처리돼 있든 값이 들어 있든 없든, 한 줄로 정리한다.
-	python3 - "$PROPS" "$key" "$value" <<'PY'
+MAVEN_MIRROR_IN="${TESTER_REPO_URL:-https://test.com/repository/maven-public/}"
+NPM_MIRROR_IN="${NPM_REGISTRY:-https://test.com/repository/npm-public/}"
+GRADLE_VERSION="$(sed -n 's/.*gradle-\([0-9.]*\)-bin\.zip/\1/p' gradle/wrapper/gradle-wrapper.properties)"
+GRADLE_DIST_IN="${GRADLE_DIST_URL:-https://test.com/repository/gradle-dist/gradle-${GRADLE_VERSION}-bin.zip}"
+
+WITH_DIST=0
+REVERT=0
+REGISTRY_IN="${REGISTRY:-}"
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--with-gradle-dist) WITH_DIST=1 ;;
+		--revert) REVERT=1 ;;
+		-r|--registry) shift; REGISTRY_IN="${1:-}" ;;
+		*) echo "알 수 없는 옵션: $1" >&2; exit 2 ;;
+	esac
+	shift
+done
+
+set_key() { # set_key <파일> <키> <값>   값이 비면 주석 처리
+	python3 - "$1" "$2" "$3" <<'PY'
 import pathlib, re, sys
 path, key, value = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
-lines = path.read_text().splitlines()
+lines = path.read_text().splitlines() if path.exists() else []
 pattern = re.compile(rf"^\s*#?\s*{re.escape(key)}\s*=")
 out, done = [], False
 for line in lines:
@@ -51,34 +62,45 @@ path.write_text("\n".join(out) + "\n")
 PY
 }
 
-WITH_DIST=0
-[ "${1:-}" = "--with-gradle-dist" ] && WITH_DIST=1
-
-if [ "${1:-}" = "--revert" ]; then
+if [ "$REVERT" = "1" ]; then
 	echo "== 공개 저장소 모드로 되돌린다 =="
-	set_prop testerRepoUrl ""
-	set_prop npmRegistry ""
-	set_prop gradleDistUrl ""
+	set_key "$PROPS" testerRepoUrl ""
+	set_key "$PROPS" npmRegistry ""
+	set_key "$PROPS" gradleDistUrl ""
 	echo "  gradle.properties: testerRepoUrl / npmRegistry / gradleDistUrl 주석 처리"
 	echo "  (gradlew 는 값이 없으면 커밋된 distributionUrl = services.gradle.org 를 쓴다)"
+	echo "  .env 의 REGISTRY/TAG 는 도커 배포 전용이라 건드리지 않았다"
 	exit 0
 fi
 
 echo "== 내부망 모드로 전환 =="
-set_prop testerRepoUrl "$MAVEN_MIRROR"
-set_prop npmRegistry "$NPM_MIRROR"
-echo "  Maven  : $MAVEN_MIRROR"
-echo "  npm    : $NPM_MIRROR"
+set_key "$PROPS" testerRepoUrl "$MAVEN_MIRROR_IN"
+set_key "$PROPS" npmRegistry "$NPM_MIRROR_IN"
 
 if [ "$WITH_DIST" = "1" ]; then
-	set_prop gradleDistUrl "$GRADLE_DIST"
-	echo "  Gradle : $GRADLE_DIST"
-	echo "           (기존 wrapper 캐시가 무효화된다 — 미러가 이 zip 을 서빙해야 gradlew 가 뜬다)"
+	set_key "$PROPS" gradleDistUrl "$GRADLE_DIST_IN"
 else
-	set_prop gradleDistUrl ""
-	echo "  Gradle : 그대로 둠(이미 받아 둔 배포본 사용). 미러에서 받으려면 --with-gradle-dist"
+	set_key "$PROPS" gradleDistUrl ""
 fi
-echo
-echo "확인:"
-echo "  ./gradlew dev            # 백엔드 :8080 + 프론트엔드 :5173"
-echo "  ./gradlew dev --offline  # 의존성·node_modules 를 이미 받아 뒀을 때(네트워크 접근 0)"
+
+if [ -n "$REGISTRY_IN" ]; then
+	[ -f "$ENV_FILE" ] || cp .env.example "$ENV_FILE"
+	set_key "$ENV_FILE" REGISTRY "$REGISTRY_IN"
+	[ -n "${TAG:-}" ] && set_key "$ENV_FILE" TAG "$TAG"
+fi
+
+# 최종 결과는 다른 스크립트가 읽는 것과 같은 경로로 다시 읽어서 보여 준다.
+# shellcheck source=deploy/internal-config.sh
+. deploy/internal-config.sh
+print_internal_config
+if [ "$WITH_DIST" != "1" ]; then
+	echo "  (Gradle 배포본은 그대로 — 미러에서 받으려면 --with-gradle-dist)"
+fi
+
+cat <<'EOM'
+
+이제 이 값들을 다시 입력할 필요가 없다:
+  ./gradlew dev              # 로컬 개발(백엔드 :8080 + 프론트엔드 :5173)
+  ./gradlew dev --offline    # 의존성·node_modules 를 이미 받아 뒀을 때
+  ./deploy/push-internal.sh  # 호스트 빌드 → 이미지 → 내부 레지스트리 푸시
+EOM

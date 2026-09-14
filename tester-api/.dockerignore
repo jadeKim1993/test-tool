@@ -1,0 +1,10 @@
+# 백엔드 이미지 빌드 컨텍스트(tester-api/)에서 제외할 것들.
+# 이미지에 들어가는 건 build/libs/tester-api.jar 하나뿐이다(호스트에서 미리 빌드).
+
+src/
+build/*
+!build/libs
+build/libs/*
+!build/libs/tester-api.jar
+data/
+*.gradle

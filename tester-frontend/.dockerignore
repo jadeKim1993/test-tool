@@ -1,6 +1,13 @@
+# 프론트엔드 이미지 빌드 컨텍스트(tester-frontend/)에서 제외할 것들.
+# 이미지에 들어가는 건 호스트에서 빌드한 dist/ 와 nginx.conf 뿐이다.
+
 node_modules
-dist
+src
+public
 build
+*.json
+*.ts
+*.html
 .env
 .env.*
 *.log

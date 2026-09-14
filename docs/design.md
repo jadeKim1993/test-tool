@@ -1387,7 +1387,7 @@ alter table send_targets drop column if exists encoding;
 | 무엇 | 어떻게 |
 |---|---|
 | Gradle 의존성 | `settings.gradle`/`build.gradle` 에서 `testerRepoUrl`(또는 `TESTER_REPO_URL`)이 있으면 **그 미러만** 본다. 없으면 Central + Plugin Portal |
-| 이미지 빌드 | Dockerfile 을 인자화 — `JDK_IMAGE`/`JRE_IMAGE`/`NODE_IMAGE`/`NGINX_IMAGE`(베이스), `TESTER_REPO_URL`/`NPM_REGISTRY`(의존성) |
+| 이미지 빌드 | 베이스 이미지만 인자화(`JRE_IMAGE`/`NGINX_IMAGE`). 의존성 미러는 필요 없다 — 호스트 빌드가 이미 해결한다(§16.15) |
 | 배포 | `deploy/push-internal.sh` 로 빌드·푸시, 내부망 서버는 `docker-compose.internal.yml` 로 **pull 만** 해서 기동 |
 
 폐쇄망에서 미러만 보게 한 이유는 단순히 "빌드 성공" 때문이 아니다. Central 을 목록에 남기면
@@ -1421,6 +1421,40 @@ alter table send_targets drop column if exists encoding;
 주의: 배포본 주소를 바꾸는 순간 `~/.gradle/wrapper/dists` 의 기존 캐시가 무효가 되어
 **미러가 그 zip 을 실제로 서빙해야만** `gradlew` 가 뜬다. 그래서 전환 스크립트에서도
 `gradleDistUrl` 설정은 `--with-gradle-dist` 로만 켠다.
+
+### 16.15 이미지는 호스트 빌드 산출물만 담는다 · 내부망 설정 일원화
+
+**이미지 안에서 빌드하던 걸 걷어냈다.** 두 Dockerfile 모두 멀티스테이지(컨테이너 안에서
+Gradle/npm 빌드)였는데, 호스트에서 만든 `tester-api.jar` 와 `dist/` 를 **담기만** 하도록 바꿨다.
+
+- 폐쇄망에서 이미지 빌드용 Maven/npm 미러를 따로 챙길 필요가 없어졌다. 의존성 문제는
+  호스트 빌드에서 한 번만 풀면 된다(그쪽은 §16.14 의 `testerRepoUrl`/`npmRegistry` 가 이미 해결).
+- **테스트한 산출물이 그대로 배포된다.** 이미지 안에서 다시 빌드하면 같은 소스라도 다른
+  바이너리가 나올 수 있는데, 그 간극이 사라졌다.
+- 이미지 빌드가 수 분 → 수 초로 줄었다.
+- 백엔드 빌드 컨텍스트가 **저장소 루트 → `tester-api/`** 로 바뀌었다(§16.8 에서 "루트여야
+  한다"고 적어 둔 제약은 컨테이너 안 Gradle 빌드 때문이었고, 이제 해당 없다).
+- 대신 **`./gradlew build` 를 먼저 돌려야 한다.** `docker compose up --build` 만으로는 안 된다.
+  `deploy/push-internal.sh` 는 이 순서를 스스로 지킨다.
+
+**헬스체크를 앱 안으로 넣었다.** 빌더 스테이지가 없어지면서 `deploy/HealthCheck.java` 를
+컴파일할 자리도 없어졌다. `TesterApplication.main` 이 `--healthcheck` 인자를 받으면 Spring
+컨텍스트를 띄우지 않고 `/actuator/health` 를 한 번 찔러 보고 종료코드만 남긴다
+(`tools/log-sink` 의 `--healthcheck` 와 같은 방식). 이미지에는 여전히 curl 이 없다.
+
+**내부망 값 입력을 한 곳으로 모았다.** 전에는 `use-internal-mirror.sh` 가 gradle.properties 에
+미러를 써 놓고도 `push-internal.sh` 가 자기 환경변수로 미러 주소를 또 받았다 — 같은 값을 두 번
+입력해야 했고 어긋날 여지가 있었다. `deploy/internal-config.sh` 를 두 스크립트가 공통으로
+읽도록 바꿨다:
+
+| 값 | 저장 위치 | 그 파일을 읽는 이유 |
+|---|---|---|
+| `testerRepoUrl` / `npmRegistry` / `gradleDistUrl` | `gradle.properties` | Gradle 과 `gradlew` 가 **이미** 읽는 파일이다 |
+| `REGISTRY` / `TAG` | `.env` | `docker compose` 가 **이미** 읽는 파일이다 |
+
+새 설정 파일을 만들지 않고 각 도구가 원래 읽던 파일에 얹은 게 핵심이다. 우선순위는
+환경변수 > 파일 > 기본값이고, `print_internal_config` 로 두 스크립트가 같은 값을 보고 있는지
+눈으로 확인할 수 있게 했다.
 
 `npmInstall` 에는 `--offline` 탈출구를 뒀다. `npm ci` 는 `node_modules` 를 지우고 레지스트리에서
 다시 받기 때문에, 의존성을 미리 반입해 둔 폐쇄망 장비에서 그냥 돌리면 오히려 멀쩡한 설치를

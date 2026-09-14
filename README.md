@@ -95,8 +95,13 @@ java -jar tester-api/build/libs/tester-api.jar
 cp .env.example .env
 # .env 를 열어 TESTER_JWT_SECRET 을 채운다 (예: openssl rand -base64 48)
 
+./gradlew build              # 이미지에 담을 jar / dist 를 호스트에서 먼저 만든다
 docker compose up -d --build
 ```
+
+> **이미지 안에서 빌드하지 않는다.** 호스트에서 만든 `tester-api.jar` 와 `dist/` 를 담기만 한다.
+> 그래서 이미지 빌드가 몇 초로 끝나고, 폐쇄망에서도 이미지 빌드용 Maven/npm 미러를 따로
+> 챙길 필요가 없다(호스트 빌드가 이미 그 설정을 쓴다). 테스트한 산출물이 그대로 배포된다.
 
 → **http://localhost** 접속(포트는 `.env` 의 `FRONTEND_PORT` 로 바꿀 수 있다).
 백엔드 API 를 직접 호출/디버깅하고 싶으면 `http://localhost:8080` 도 함께 열려 있다
@@ -109,8 +114,8 @@ docker compose down -v       # 볼륨까지 삭제 — 데이터를 완전히 �
 
 | 파일 | 역할 |
 |---|---|
-| `tester-api/Dockerfile` | 백엔드. 멀티스테이지(JDK 로 `bootJar` 빌드 → JRE 로 실행). 빌드 컨텍스트는 **저장소 루트**여야 한다(멀티모듈 Gradle 프로젝트라 모든 `tester-*` 모듈이 필요) |
-| `tester-frontend/Dockerfile` | 프론트엔드. 멀티스테이지(Node 로 `vite build` → nginx 로 정적 서빙). 빌드 컨텍스트는 `tester-frontend/` 자신 |
+| `tester-api/Dockerfile` | 백엔드. 호스트에서 만든 `build/libs/tester-api.jar` 를 JRE 이미지에 담는다. 컨텍스트는 `tester-api/` |
+| `tester-frontend/Dockerfile` | 프론트엔드. 호스트에서 만든 `dist/` 를 nginx 이미지에 담는다. 컨텍스트는 `tester-frontend/` |
 | `tester-frontend/nginx.conf` | Docker 전용 nginx 설정. 백엔드를 compose 서비스명(`backend:8080`)으로 프록시한다. 컨테이너 없이 한 장비에 직접 설치할 때는 `deploy/nginx.conf`(백엔드가 `127.0.0.1:8080`)를 대신 쓴다 |
 | `docker-compose.yml` | 두 이미지를 빌드해 함께 띄운다. `backend` 가 healthy 해질 때까지 `frontend` 시작을 미룬다 |
 | `.env.example` | `TESTER_JWT_SECRET`, 포트 설정 템플릿. `.env` 로 복사해서 쓴다(`.gitignore` 에 이미 포함) |
@@ -118,7 +123,8 @@ docker compose down -v       # 볼륨까지 삭제 — 데이터를 완전히 �
 **직접 이미지만 빌드하고 싶을 때**(compose 없이):
 
 ```bash
-docker build -f tester-api/Dockerfile -t tester-api .        # 컨텍스트가 루트인 점 주의
+./gradlew :tester-api:bootJar :tester-frontend:npmBuild      # 산출물 먼저
+docker build -t tester-api tester-api/
 docker build -t tester-frontend tester-frontend/
 ```
 
@@ -190,25 +196,36 @@ docker build -t tester-frontend tester-frontend/
 
 `http://` 미러도 그대로 쓸 수 있다(Gradle 7+ 가 요구하는 `allowInsecureProtocol` 을 자동으로 켠다).
 
+### 설정은 한 곳에서
+
+`./deploy/use-internal-mirror.sh` 를 한 번 돌리면 **그 뒤로는 아무 값도 다시 입력하지 않는다.**
+기록된 값을 `gradlew`, `./gradlew dev`, `deploy/push-internal.sh` 가 모두 같은 경로로 읽는다
+(`deploy/internal-config.sh`).
+
+| 값 | 저장되는 곳 | 읽는 쪽 |
+|---|---|---|
+| `testerRepoUrl` / `npmRegistry` / `gradleDistUrl` | `gradle.properties` | Gradle, `gradlew`, push 스크립트 |
+| `REGISTRY` / `TAG` | `.env` | `docker-compose.internal.yml`, push 스크립트 |
+
+```bash
+./deploy/use-internal-mirror.sh -r 192.168.70.114:5000   # 미러 + 레지스트리를 한 번에 기록
+```
+
 ### 이미지 빌드 → 내부 레지스트리 푸시
 
 ```bash
-./deploy/push-internal.sh                       # 인터넷에서 빌드해 내부 레지스트리로 푸시
-./deploy/push-internal.sh --closed              # 폐쇄망 안에서 빌드(베이스 이미지·의존성도 내부 미러)
-REGISTRY=harbor.test.com/tester TAG=1.2.0 ./deploy/push-internal.sh
+./deploy/push-internal.sh                # 호스트 빌드 → 이미지 → 푸시 (인자 불필요)
+./deploy/push-internal.sh --no-push      # 이미지까지만
+./deploy/push-internal.sh --skip-build   # 이미 빌드한 jar/dist 를 그대로 사용
+TAG=1.2.0 ./deploy/push-internal.sh      # 일회성 덮어쓰기
 ```
 
-기본 레지스트리는 `192.168.70.114:5000` 이다. Harbor 처럼 프로젝트 경로가 붙는 형태면
-`REGISTRY=192.168.70.114/tester` 처럼 통째로 바꿔 주면 된다.
+내부망 모드면 베이스 이미지도 레지스트리에서 받는다(`JRE_IMAGE` / `NGINX_IMAGE` 빌드 인자를
+스크립트가 자동으로 붙인다). Harbor 처럼 프로젝트 경로가 붙는 형태면
+`-r 192.168.70.114/tester` 처럼 통째로 지정하면 된다.
 
-이미지 빌드 인자(폐쇄망에서 직접 `docker build` 할 때):
-
-| 인자 | 대상 | 용도 |
-|---|---|---|
-| `JDK_IMAGE` / `JRE_IMAGE` | 백엔드 | 베이스 이미지를 내부 레지스트리에서 |
-| `TESTER_REPO_URL` (+`_USER`/`_PASSWORD`) | 백엔드 | Gradle 의존성을 사내 Maven 미러에서 |
-| `NODE_IMAGE` / `NGINX_IMAGE` | 프론트엔드 | 베이스 이미지를 내부 레지스트리에서 |
-| `NPM_REGISTRY` | 프론트엔드 | npm 패키지를 사내 미러에서 |
+이미지 안에서 빌드하지 않으므로 **이미지 빌드 단계에는 Maven/npm 미러가 필요 없다** —
+의존성은 호스트 빌드에서 이미 해결된다.
 
 ### 내부망 서버에서 실행
 

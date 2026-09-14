@@ -19,6 +19,4 @@ docs/
 README.md
 *.md
 
-# deploy/ 는 대부분 이미지에 필요 없지만 HEALTHCHECK 용 소스 한 개만 예외로 넣는다.
-deploy/*
-!deploy/HealthCheck.java
+deploy/

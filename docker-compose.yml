@@ -2,6 +2,7 @@
 #
 # 사용법:
 #   cp .env.example .env   # TESTER_JWT_SECRET 채우기
+#   ./gradlew build        # 이미지에 담을 jar / dist 를 호스트에서 먼저 만든다
 #   docker compose up -d --build
 #   → http://localhost:${FRONTEND_PORT:-80} 접속
 #
@@ -11,9 +12,9 @@
 services:
   backend:
     build:
-      # 멀티모듈 Gradle 프로젝트라 컨텍스트는 저장소 루트여야 한다.
-      context: .
-      dockerfile: tester-api/Dockerfile
+      # 이미지는 호스트에서 빌드한 tester-api/build/libs/tester-api.jar 만 담는다.
+      # (예전에는 이미지 안에서 Gradle 빌드를 돌렸고 그래서 컨텍스트가 저장소 루트였다)
+      context: tester-api
     image: tester-api:local
     restart: unless-stopped
     environment:
@@ -28,10 +29,10 @@ services:
       # 으로 프록시하므로 이 포트를 막아도 앱은 정상 동작한다.
       - "${BACKEND_PORT:-8080}:8080"
     healthcheck:
-      # 이미지에 curl 을 넣지 않는다(폐쇄망 대비). JDK 내장 HttpClient 를 쓰는 최소 프로그램.
-      test: ["CMD", "java", "-cp", "/app/health", "HealthCheck"]
+      # 이미지에 curl 을 넣지 않는다(폐쇄망 대비). 앱 자신의 --healthcheck 모드를 쓴다.
+      test: ["CMD", "java", "-jar", "app.jar", "--healthcheck"]
       interval: 15s
-      timeout: 3s
+      timeout: 5s
       retries: 5
       start_period: 30s
 
