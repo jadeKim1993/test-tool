@@ -30,6 +30,8 @@ import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
 import Typography from '@mui/material/Typography';
 
 import AddIcon from '@mui/icons-material/Add';
+import UnfoldLessIcon from '@mui/icons-material/UnfoldLess';
+import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore';
 import ViewAgendaOutlinedIcon from '@mui/icons-material/ViewAgendaOutlined';
 import ViewListIcon from '@mui/icons-material/ViewList';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlined';
@@ -59,6 +61,17 @@ import { MONO } from '../theme';
  * 상단에는 전체 합계와 "새 작업" 만 남긴다.
  */
 const VIEW_KEY = 'tester.consoleView';
+/** 접어 둔 작업 카드 id 목록. 작업이 많을 때 지켜볼 것만 펼쳐 두도록 브라우저에 기억한다. */
+const COLLAPSED_KEY = 'tester.collapsedJobs';
+
+function loadCollapsed(): Set<number> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '[]');
+    return new Set(Array.isArray(raw) ? raw.filter((v) => typeof v === 'number') : []);
+  } catch {
+    return new Set();
+  }
+}
 
 export default function SendConsole() {
   const { latest } = useMetrics();
@@ -78,6 +91,18 @@ export default function SendConsole() {
   });
   const [stateFilter, setStateFilter] = useState<'all' | 'running' | 'stopped'>('all');
   const [sortBy, setSortBy] = useState<'name' | 'eps' | 'dropped'>('name');
+  const [collapsed, setCollapsed] = useState<Set<number>>(loadCollapsed);
+
+  const saveCollapsed = (next: Set<number>) => {
+    setCollapsed(next);
+    try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next])); } catch { /* 기억 못 해도 동작에는 지장 없다 */ }
+  };
+  const toggleCollapsed = (id: number) => {
+    const next = new Set(collapsed);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    saveCollapsed(next);
+  };
 
   const reload = useCallback(async () => {
     try {
@@ -241,6 +266,23 @@ export default function SendConsole() {
             <MenuItem value="dropped">버림 많은 순</MenuItem>
           </TextField>
           <Box sx={{ flex: 1 }} />
+          {view === 'card' && visibleJobs.length > 0 && (() => {
+            // 보이는 카드가 전부 접혀 있으면 "모두 펼치기", 하나라도 펼쳐져 있으면 "모두 접기".
+            const allCollapsed = visibleJobs.every((j) => collapsed.has(j.id));
+            return (
+              <Button color="inherit" startIcon={allCollapsed ? <UnfoldMoreIcon /> : <UnfoldLessIcon />}
+                      onClick={() => {
+                        const next = new Set(collapsed);
+                        for (const j of visibleJobs) {
+                          if (allCollapsed) next.delete(j.id);
+                          else next.add(j.id);
+                        }
+                        saveCollapsed(next);
+                      }}>
+                {allCollapsed ? '모두 펼치기' : '모두 접기'}
+              </Button>
+            );
+          })()}
           <ToggleButtonGroup exclusive value={view} onChange={(_, v) => { if (v) changeView(v); }}>
             <ToggleButton value="card" aria-label="카드 보기" title="카드 보기 (그래프·이력)">
               <ViewAgendaOutlinedIcon fontSize="small" />
@@ -268,6 +310,8 @@ export default function SendConsole() {
       <Box sx={{
         display: view === 'card' ? 'grid' : 'none',
         gap: 2,
+        // 접은 카드가 옆 카드 높이에 맞춰 늘어나지 않도록 각자 내용 높이만큼만.
+        alignItems: 'start',
         // 화면 폭이 아니라 실제로 쓸 수 있는 폭에 맞춰 접힌다. 카드가 좁아지면 한 줄로 떨어진다.
         gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 520px), 1fr))',
       }}>
@@ -279,6 +323,8 @@ export default function SendConsole() {
             options={options}
             status={latest[job.id]}
             running={runningIds.has(job.id)}
+            collapsed={collapsed.has(job.id)}
+            onToggleCollapse={() => toggleCollapsed(job.id)}
             onStart={(eps) => start(job, eps)}
             onStop={() => stop(job)}
             onEdit={() => setEditing(job)}
@@ -311,12 +357,17 @@ export default function SendConsole() {
   );
 }
 
-function JobCard({ job, target, options, status, running, onStart, onStop, onEdit, onDelete, onRate }: {
+function JobCard({
+  job, target, options, status, running, collapsed, onToggleCollapse, onStart, onStop, onEdit, onDelete, onRate,
+}: {
   job: Job;
   target?: Target;
   options: MetaOptions | null;
   status?: JobStatus;
   running: boolean;
+  /** 접으면 머리 한 줄(상태·경로·현재 EPS·버튼)만 남긴다. */
+  collapsed: boolean;
+  onToggleCollapse: () => void;
   /** 카드에 입력된 "시작 속도"로 시작한다. 작업 설정을 고치러 들어갈 필요가 없다. */
   onStart: (eps: number) => void;
   onStop: () => void;
@@ -384,7 +435,7 @@ function JobCard({ job, target, options, status, running, onStart, onStop, onEdi
 
   return (
     <Card sx={{ borderLeft: 3, borderLeftColor: accent, display: 'flex', flexDirection: 'column' }}>
-      <Box sx={{ px: 2, pt: 1.5, pb: 1 }}>
+      <Box sx={{ px: 2, pt: 1.5, pb: collapsed ? 1.5 : 0 }}>
         <Stack direction="row" spacing={1} sx={{ alignItems: 'flex-start', justifyContent: 'space-between' }}>
           {/* 작업 이름은 "카테고리 → 주소"로 자동으로 붙으므로 따로 쓰지 않고, 그 내용을 첫 줄에 바로 보여 준다. */}
           <Stack direction="row" spacing={1} sx={{ alignItems: 'center', minWidth: 0, flex: 1 }} title={job.name}>
@@ -392,7 +443,15 @@ function JobCard({ job, target, options, status, running, onStart, onStop, onEdi
             <JobRoute job={job} target={target} running={running} options={options} />
           </Stack>
 
-          <Stack direction="row" spacing={0.5} sx={{ flexShrink: 0 }}>
+          <Stack direction="row" spacing={0.5} sx={{ flexShrink: 0, alignItems: 'center' }}>
+            {/* 접혀 있어도 "지금 얼마나 보내는지"는 보이게 */}
+            {collapsed && running && status && (
+              <Typography variant="body2" sx={{ fontFamily: MONO, fontWeight: 700, mr: 0.5, whiteSpace: 'nowrap' }}
+                          title={`목표 ${status.targetEps === 0 ? '무제한' : fmt.int(status.targetEps)} EPS`}>
+                {fmt.int(status.eps)}
+                <Box component="span" sx={{ color: 'text.secondary', fontWeight: 400, ml: 0.5 }}>EPS</Box>
+              </Typography>
+            )}
             {running ? (
               <Tooltip title="정지">
                 <IconButton size="small" color="error" onClick={onStop}><StopIcon /></IconButton>
@@ -420,9 +479,18 @@ function JobCard({ job, target, options, status, running, onStart, onStop, onEdi
                 </IconButton>
               </span>
             </Tooltip>
+            <Tooltip title={collapsed ? '펼치기' : '접기'}>
+              <IconButton size="small" aria-label={collapsed ? '펼치기' : '접기'} onClick={onToggleCollapse}>
+                {collapsed ? <UnfoldMoreIcon fontSize="small" /> : <UnfoldLessIcon fontSize="small" />}
+              </IconButton>
+            </Tooltip>
           </Stack>
         </Stack>
+      </Box>
 
+      {/* 숫자·속도 조정·이력은 접을 수 있다. 작업이 많을 때 지켜볼 것만 펼쳐 둔다. */}
+      <Collapse in={!collapsed}>
+      <Box sx={{ px: 2, pb: 1 }}>
         {/* 일정 속도로 보내는 경우가 대부분이라 추이 그래프 대신 "지금 몇 EPS 인가"를 크게, 나머지는 한 줄로.
             멈춰 있으면 목표와 마지막 실행 결과만 흐리게 보여 준다. */}
         {!running ? (
@@ -555,6 +623,7 @@ function JobCard({ job, target, options, status, running, onStart, onStop, onEdi
             </TableBody>
           </Table>
         </Box>
+      </Collapse>
       </Collapse>
     </Card>
   );
