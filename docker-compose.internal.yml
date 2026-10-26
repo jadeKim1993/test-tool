@@ -23,6 +23,8 @@ services:
     restart: unless-stopped
     environment:
       TESTER_JWT_SECRET: ${TESTER_JWT_SECRET:-}
+      # 컨테이너 기본 시간대는 UTC 라, 비워 두면 만든 로그의 시각(${ts})이 한국 시각보다 9시간 늦게 찍힌다.
+      TZ: ${TZ:-Asia/Seoul}
     volumes:
       - tester-data:/app/data
     ports:

@@ -32,6 +32,8 @@ import io.netty.buffer.ByteBufAllocator;
  * TCP 는 로그를 16KB 버퍼에 이어붙였다가 한 번에 넘긴다. 10만 EPS 에서 건당 write 를 하면
  * syscall 이 초당 10만 번이지만, 배치하면 초당 1~2천 번으로 줄어든다.
  * UDP 는 1건=1패킷이 규약이므로 건별로 버퍼를 만들되 flush 를 틱 단위로 모은다.
+ * HTTP 도 건별로 넘긴다 — 본문 형식(JSON 등)에 맞춰 한 건씩 감싸는 일은 송신기가 하므로, 프레이밍 없이
+ * 로그 본문만 준다(여러 줄 로그를 줄바꿈으로 자르면 한 건이 여러 건으로 쪼개진다).
  *
  * <h2>스레드 안전</h2>
  * 렌더링 상태(RenderContext, CompiledTemplate, 난수, 배치 버퍼)는 전부 워커 전용이다.
@@ -55,7 +57,9 @@ final class GeneratorWorker implements Runnable {
 	private final ByteBufAllocator allocator;
 	private final Framing framing;
 	private final WireEncoding encoding;
+	/** 건별로 송신기에 넘기는가(UDP·HTTP). false 면 배치 버퍼에 이어 붙인다(TCP·TLS). */
 	private final boolean datagramMode;
+	private final boolean udp;
 	private final int batchBytes;
 	private final int workerCount;
 	private final OverflowPolicy overflow;
@@ -82,9 +86,11 @@ final class GeneratorWorker implements Runnable {
 		this.stats = generator.stats();
 		this.allocator = generator.allocator();
 		RunSpec spec = generator.spec();
-		this.framing = spec.target().framing();
+		boolean http = spec.target().isHttp();
+		this.framing = http ? Framing.NONE : spec.target().framing();
 		this.encoding = spec.encoding();
-		this.datagramMode = com.tms.tester.common.Protocol.UDP.equalsIgnoreCase(spec.target().protocol());
+		this.udp = com.tms.tester.common.Protocol.UDP.equalsIgnoreCase(spec.target().protocol());
+		this.datagramMode = udp || http;
 		this.batchBytes = spec.target().batchBytes();
 		this.workerCount = generator.workerCount();
 		this.overflow = spec.overflow();
@@ -208,7 +214,7 @@ final class GeneratorWorker implements Runnable {
 			throw e;
 		}
 		int size = buf.readableBytes();
-		if (size > UdpLogSender.SAFE_DATAGRAM_BYTES) {
+		if (udp && size > UdpLogSender.SAFE_DATAGRAM_BYTES) {
 			stats.recordOversized();
 		}
 		if (endpoint.send(buf)) {

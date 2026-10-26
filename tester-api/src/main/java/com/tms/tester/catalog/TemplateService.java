@@ -108,6 +108,28 @@ public class TemplateService {
 		return changed;
 	}
 
+	/**
+	 * 카테고리 안 로그 종류의 순서를 저장한다(끌어서 바꾼 결과). 순차/라운드로빈은 이 순서대로 보내므로
+	 * 실행 중인 전송에도 바로 반영한다. 목록에 빠진 종류는 기존 순서대로 뒤에 둔다.
+	 */
+	@Transactional
+	public void reorder(Long userId, Long categoryId, List<Long> ids) {
+		categoryService.requireOwned(userId, categoryId);
+		List<LogTemplate> templates = templateRepository.findByCategoryIdOrderBySortOrderAscIdAsc(categoryId);
+		int index = 0;
+		for (Long id : ids) {
+			LogTemplate template = templates.stream().filter(t -> t.getId().equals(id)).findFirst()
+					.orElseThrow(() -> TesterException.notFound("로그 종류", id));
+			template.setSortOrder(index++);
+		}
+		for (LogTemplate template : templates) {
+			if (!ids.contains(template.getId())) {
+				template.setSortOrder(index++);
+			}
+		}
+		runManager.refreshTemplates(categoryId);
+	}
+
 	/** 저장하지 않고 렌더링 결과만 돌려준다. 편집 화면의 실시간 미리보기가 사용한다. */
 	public CatalogDtos.PreviewResponse preview(CatalogDtos.PreviewRequest request) {
 		int count = request.count() == null ? 5 : request.count();
@@ -117,17 +139,22 @@ public class TemplateService {
 					StandardCharsets.UTF_8, request.content());
 			RenderContext ctx = RenderContext.standalone();
 			List<String> lines = new ArrayList<>(count);
+			List<List<CompiledTemplate.Part>> parts = new ArrayList<>(count);
 			int totalBytes = 0;
 			for (int i = 0; i < count; i++) {
 				ctx.tick(System.currentTimeMillis());
-				String line = template.renderToString(ctx);
-				totalBytes += line.getBytes(StandardCharsets.UTF_8).length;
-				lines.add(line);
+				List<CompiledTemplate.Part> lineParts = template.renderParts(ctx);
+				StringBuilder line = new StringBuilder();
+				lineParts.forEach(part -> line.append(part.text()));
+				totalBytes += line.toString().getBytes(StandardCharsets.UTF_8).length;
+				lines.add(line.toString());
+				parts.add(lineParts);
 			}
-			return new CatalogDtos.PreviewResponse(lines, totalBytes / Math.max(1, count), null, null);
+			return new CatalogDtos.PreviewResponse(lines, totalBytes / Math.max(1, count), null, null,
+					template.placeholders(), parts);
 		}
 		catch (TemplateSyntaxException e) {
-			return new CatalogDtos.PreviewResponse(List.of(), 0, e.getMessage(), e.getPosition());
+			return CatalogDtos.PreviewResponse.failed(e.getMessage(), e.getPosition());
 		}
 	}
 

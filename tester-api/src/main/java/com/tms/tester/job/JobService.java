@@ -22,7 +22,9 @@ import com.tms.tester.domain.entity.User;
 import com.tms.tester.domain.repository.LogTemplateRepository;
 import com.tms.tester.domain.repository.SendJobRepository;
 import com.tms.tester.domain.repository.UserRepository;
+import com.tms.tester.catalog.CatalogDtos;
 import com.tms.tester.catalog.CategoryService;
+import com.tms.tester.catalog.TemplateService;
 import com.tms.tester.target.TargetService;
 import com.tms.tester.transport.TemplateSource;
 
@@ -38,10 +40,11 @@ public class JobService {
 	private final TargetService targetService;
 	private final RunManager runManager;
 	private final RunHistoryService historyService;
+	private final TemplateService templateService;
 
 	public JobService(SendJobRepository jobRepository, LogTemplateRepository templateRepository,
 			UserRepository userRepository, CategoryService categoryService, TargetService targetService,
-			RunManager runManager, RunHistoryService historyService) {
+			RunManager runManager, RunHistoryService historyService, TemplateService templateService) {
 		this.jobRepository = jobRepository;
 		this.templateRepository = templateRepository;
 		this.userRepository = userRepository;
@@ -49,6 +52,7 @@ public class JobService {
 		this.targetService = targetService;
 		this.runManager = runManager;
 		this.historyService = historyService;
+		this.templateService = templateService;
 	}
 
 	/** 템플릿 수정 시 실행 중 작업에 반영할 수 있도록 재조회 경로를 등록한다. */
@@ -160,6 +164,33 @@ public class JobService {
 		return result;
 	}
 
+	/**
+	 * 이 작업이 지금 실제로 보내는 로그 종류와 비율.
+	 * <p>템플릿 화면의 비율은 가중치 기준이지만, 엔진은 라운드로빈/순차일 때 가중치를 무시하고
+	 * 균등하게 보낸다. 화면이 그 차이를 그대로 보여 줄 수 있도록 실제 비율을 여기서 계산한다
+	 * (GeneratorWorker.selectTemplate 과 같은 규칙).
+	 */
+	@Transactional(readOnly = true)
+	public JobDtos.JobContent content(Long userId, Long jobId) {
+		SendJob job = requireOwned(userId, jobId);
+		List<TemplateSource> sources = loadTemplateSources(jobId);
+		boolean weighted = job.getSelection() == SelectionStrategy.WEIGHTED_RANDOM;
+		int totalWeight = sources.stream().mapToInt(TemplateSource::weight).sum();
+
+		List<JobDtos.JobTemplate> templates = new ArrayList<>(sources.size());
+		for (TemplateSource source : sources) {
+			double share = weighted
+					? (totalWeight == 0 ? 0 : (double) source.weight() / totalWeight)
+					: 1.0 / sources.size();
+			var preview = templateService.preview(
+					new CatalogDtos.PreviewRequest(source.content(), source.format(), 1));
+			String sample = preview.lines().isEmpty() ? null : preview.lines().get(0);
+			templates.add(new JobDtos.JobTemplate(source.id(), source.name(), source.format(),
+					source.weight(), share, sample, preview.averageBytes(), preview.error()));
+		}
+		return new JobDtos.JobContent(job.getSelection(), job.getCategory().getEncoding(), templates);
+	}
+
 	/** 작업이 사용할 템플릿을 실행 시점에 새로 읽는다(수정 즉시 반영의 근거). */
 	@Transactional(readOnly = true)
 	public List<TemplateSource> loadTemplateSources(Long jobId) {
@@ -231,10 +262,13 @@ public class JobService {
 
 	private JobDtos.JobResponse toResponse(SendJob job) {
 		Set<Long> templateIds = new LinkedHashSet<>(job.getTemplateIds());
+		// 실제로 보내는 종류 수: 고른 것 중 켜져 있는 것(고르지 않았으면 켜진 것 전부).
+		// 예전엔 고른 개수를 그대로 써서, 고른 뒤 템플릿 화면에서 끈 종류까지 세었다.
+		List<LogTemplate> enabled = templateRepository.findByCategoryIdAndEnabledTrueOrderBySortOrderAscIdAsc(
+				job.getCategory().getId());
 		int templateCount = templateIds.isEmpty()
-				? templateRepository.findByCategoryIdAndEnabledTrueOrderBySortOrderAscIdAsc(
-						job.getCategory().getId()).size()
-				: templateIds.size();
+				? enabled.size()
+				: (int) enabled.stream().filter(t -> templateIds.contains(t.getId())).count();
 		return new JobDtos.JobResponse(
 				job.getId(), job.getName(),
 				job.getCategory().getId(), job.getCategory().getName(),

@@ -2,6 +2,8 @@ dependencies {
 	api project(':tester-generator')
 	api 'io.netty:netty-transport'
 	api 'io.netty:netty-handler'
+	// HTTP/HTTPS 전송(HttpLogSender). 요청 인코딩·응답 파싱만 쓴다.
+	implementation 'io.netty:netty-codec-http'
 	// Linux 에서는 epoll 네이티브 전송을 사용해 syscall 비용을 줄인다.
 	api 'io.netty:netty-transport-native-epoll'
 	runtimeOnly 'io.netty:netty-transport-native-epoll::linux-x86_64'

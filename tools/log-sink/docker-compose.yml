@@ -4,9 +4,9 @@
 #   cd tools/log-sink
 #   docker compose up -d --build
 #
-# 기본 포트는 9000/TCP, 5514/UDP 다. 앱의 전송 대상 화면에서
-# "TCP 127.0.0.1:9000" 또는 "UDP 127.0.0.1:5514" 를 한 번 추가하면 바로 전송 테스트를 할 수 있다
-# (신규 가입 시 자동 시드되는 기본 대상은 예제용 사설 IP 라 이 sink 를 가리키지 않는다).
+# 기본 포트는 9000/TCP, 5514/UDP, 9880/HTTP(수신) 다. 앱의 전송 대상 화면에서
+# "TCP 127.0.0.1:9000", "UDP 127.0.0.1:5514" 또는 "HTTP 127.0.0.1:9880"(형식·경로는 아무거나)을
+# 한 번 추가하면 바로 전송 테스트를 할 수 있다.
 #
 # 대시보드: http://localhost:8090
 # 종료:     docker compose down
@@ -23,12 +23,14 @@ services:
       TCP_PORT: "9000"
       UDP_PORT: "5514"
       HTTP_PORT: "8090"
+      HTTP_INGEST_PORT: "9880"
       MAX_RECENT: ${SINK_MAX_RECENT:-50}
     ports:
       # 호스트 쪽 포트만 .env 로 바꿀 수 있게 열어 둔다(컨테이너 내부 포트는 위 environment 와 맞춘다).
       - "${SINK_TCP_PORT:-9000}:9000/tcp"
       - "${SINK_UDP_PORT:-5514}:5514/udp"
       - "${SINK_HTTP_PORT:-8090}:8090/tcp"
+      - "${SINK_HTTP_INGEST_PORT:-9880}:9880/tcp"
     healthcheck:
       test: ["CMD", "java", "LogSink", "--healthcheck"]
       interval: 10s

@@ -74,11 +74,18 @@ public final class LoadGenerator implements AutoCloseable {
 			sender.connect();
 		}
 		catch (Exception e) {
-			state = RunState.FAILED;
-			lastError = e.getMessage();
-			sender.close();
-			sender = null;
-			throw e;
+			if (!sender.keepsRetrying()) {
+				state = RunState.FAILED;
+				lastError = e.getMessage();
+				sender.close();
+				sender = null;
+				throw e;
+			}
+			// 수신 서버가 아직 안 떠 있어도 시작한다. 송신기가 뒤에서 계속 붙어 보고, 붙는 순간부터
+			// 이어서 보낸다. 오류는 sender.lastError() 로 화면에 보이다가 연결되면 지워진다
+			// (여기 lastError 에 넣으면 그쪽이 우선이라 연결된 뒤에도 남는다).
+			log.warn("수신 서버에 아직 연결하지 못했지만 재연결을 계속하며 시작한다: {} ({})",
+					spec.target().endpoint(), e.getMessage());
 		}
 
 		startedAtMillis = System.currentTimeMillis();
@@ -254,6 +261,23 @@ public final class LoadGenerator implements AutoCloseable {
 		return stats;
 	}
 
+	/**
+	 * 수신측이 받은 건수. 워커가 센 전송 건수에서 수신측이 거부했다고 확인된 건(HTTP 4xx/5xx 등)을 뺀다.
+	 * 화면(실시간)과 실행 이력이 같은 값을 쓰도록 여기 한 곳에서 계산한다.
+	 */
+	public long deliveredCount() {
+		return stats.sent() - (sender == null ? 0 : sender.failedRecords());
+	}
+
+	public long deliveredBytes() {
+		return stats.bytes() - (sender == null ? 0 : sender.failedBytes());
+	}
+
+	/** 버린 건수 + 수신측이 거부한 건수. */
+	public long droppedCount() {
+		return stats.dropped() + (sender == null ? 0 : sender.failedRecords());
+	}
+
 	public String endpointDescription() {
 		return sender != null ? sender.describe() : spec.target().endpoint();
 	}
@@ -264,8 +288,9 @@ public final class LoadGenerator implements AutoCloseable {
 	 */
 	public MetricSample sample() {
 		long now = System.currentTimeMillis();
-		long sent = stats.sent();
-		long bytes = stats.bytes();
+		// 수신측이 거부했다고 확인된 건(HTTP 4xx/5xx 등)은 전송에서 빼고 버림으로 센다.
+		long sent = deliveredCount();
+		long bytes = deliveredBytes();
 		long elapsedMillis = Math.max(1, now - lastSampleMillis);
 
 		double eps = (sent - lastSampleSent) * 1000.0 / elapsedMillis;
@@ -292,7 +317,7 @@ public final class LoadGenerator implements AutoCloseable {
 				Math.max(0, mbps),
 				sent,
 				bytes,
-				stats.dropped(),
+				droppedCount(),
 				stats.errors(),
 				state,
 				connection,

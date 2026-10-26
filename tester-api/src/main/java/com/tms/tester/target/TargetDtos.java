@@ -3,6 +3,7 @@ package com.tms.tester.target;
 import java.time.Instant;
 
 import com.tms.tester.common.Framing;
+import com.tms.tester.common.HttpFormat;
 
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -26,7 +27,11 @@ public final class TargetDtos {
 			Framing framing,
 			Integer batchBytes,
 			Integer sendBufferBytes,
-			Integer connectTimeoutMs) {
+			Integer connectTimeoutMs,
+			// HTTP/HTTPS 전용
+			@Size(max = 500, message = "경로는 500자 이하여야 합니다") String httpPath,
+			HttpFormat httpFormat,
+			@Size(max = 2000, message = "헤더는 2000자 이하여야 합니다") String httpHeaders) {
 	}
 
 	public record TargetResponse(
@@ -40,6 +45,9 @@ public final class TargetDtos {
 			int batchBytes,
 			int sendBufferBytes,
 			int connectTimeoutMs,
+			String httpPath,
+			HttpFormat httpFormat,
+			String httpHeaders,
 			String endpoint,
 			Instant updatedAt) {
 	}

@@ -38,12 +38,19 @@ final class CountingSink implements AutoCloseable {
 	}
 
 	static CountingSink tcp() throws InterruptedException {
+		return tcp(0);
+	}
+
+	/** 정해진 포트로 띄운다. "서버가 죽었다가 같은 주소로 다시 뜨는" 상황을 만들 때 쓴다. */
+	static CountingSink tcp(int port) throws InterruptedException {
 		EventLoopGroup boss = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
 		EventLoopGroup worker = new MultiThreadIoEventLoopGroup(2, NioIoHandler.newFactory());
 		CountingSink[] holder = new CountingSink[1];
 		ServerBootstrap bootstrap = new ServerBootstrap()
 				.group(boss, worker)
 				.channel(NioServerSocketChannel.class)
+				// 방금 닫은 포트를 곧바로 다시 쓰기 위해(재기동 시나리오).
+				.option(ChannelOption.SO_REUSEADDR, true)
 				.childOption(ChannelOption.SO_RCVBUF, 4 * 1024 * 1024)
 				.childHandler(new ChannelInitializer<SocketChannel>() {
 					@Override
@@ -62,7 +69,7 @@ final class CountingSink implements AutoCloseable {
 						});
 					}
 				});
-		Channel serverChannel = bootstrap.bind(0).sync().channel();
+		Channel serverChannel = bootstrap.bind(port).sync().channel();
 		CountingSink sink = new CountingSink(boss, worker, serverChannel);
 		holder[0] = sink;
 		return sink;

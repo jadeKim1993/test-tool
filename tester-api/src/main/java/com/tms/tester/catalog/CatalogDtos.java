@@ -5,15 +5,21 @@ import java.util.List;
 
 import com.tms.tester.common.LogFormat;
 import com.tms.tester.common.WireEncoding;
+import com.tms.tester.generator.CompiledTemplate;
 
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
 public final class CatalogDtos {
 
 	private CatalogDtos() {
+	}
+
+	/** 끌어서 바꾼 순서. 화면에 보이는 순서대로 id 를 담는다. */
+	public record OrderRequest(@NotNull List<Long> ids) {
 	}
 
 	public record CategoryRequest(
@@ -32,6 +38,8 @@ public final class CatalogDtos {
 			boolean shared,
 			boolean owned,
 			int templateCount,
+			/** 켜져 있는 로그 종류 수. 전송 화면은 전체가 아니라 이 수를 보여 준다. */
+			int enabledTemplateCount,
 			WireEncoding encoding,
 			Instant updatedAt) {
 	}
@@ -66,7 +74,18 @@ public final class CatalogDtos {
 			@Min(1) @Max(50) Integer count) {
 	}
 
-	public record PreviewResponse(List<String> lines, int averageBytes, String error, Integer position) {
+	/**
+	 * 미리보기 결과.
+	 * <p>{@code parts} 는 {@code lines} 와 같은 줄을 조각으로 나눈 것으로, 각 조각의 {@code source} 가
+	 * {@code placeholders} 인덱스(0 이상)·고정 문자열(-1)·포맷 헤더(-2) 중 무엇에서 나왔는지 알려 준다.
+	 * 편집 화면이 렌더 결과와 템플릿 원문을 서로 이어 보여 주는 데 쓴다.
+	 */
+	public record PreviewResponse(List<String> lines, int averageBytes, String error, Integer position,
+			List<CompiledTemplate.Placeholder> placeholders, List<List<CompiledTemplate.Part>> parts) {
+
+		static PreviewResponse failed(String error, int position) {
+			return new PreviewResponse(List.of(), 0, error, position < 0 ? null : position, List.of(), List.of());
+		}
 	}
 
 	/** 카테고리 통째로 내보내기/가져오기 (팀 간 템플릿 공유용). */

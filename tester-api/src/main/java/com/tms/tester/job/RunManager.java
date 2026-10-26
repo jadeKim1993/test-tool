@@ -249,11 +249,13 @@ public class RunManager {
 		if (runs.remove(jobId) == null) {
 			return;
 		}
-		var stats = run.generator.statistics();
-		historyService.finish(run.runId, run.generator.state(), stats.sent(), stats.bytes(),
-				stats.dropped(), stats.errors(), run.avgEps(), run.peakEps, run.generator.completionReason());
+		var generator = run.generator;
+		// 실시간 화면과 같은 기준(수신측이 거부한 건은 전송이 아니라 버림)으로 남긴다.
+		historyService.finish(run.runId, generator.state(), generator.deliveredCount(), generator.deliveredBytes(),
+				generator.droppedCount(), generator.statistics().errors(), run.avgEps(), run.peakEps,
+				generator.completionReason());
 		log.info("작업 종료: {} 상태={} 전송={}건 평균={} EPS",
-				run.jobName, run.generator.state(), stats.sent(), run.avgEps());
+				run.jobName, generator.state(), generator.deliveredCount(), run.avgEps());
 	}
 
 	@PreDestroy

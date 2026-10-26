@@ -22,10 +22,11 @@ COPY --from=builder /out/*.class ./
 ENV TCP_PORT=9000 \
 	UDP_PORT=5514 \
 	HTTP_PORT=8090 \
+	HTTP_INGEST_PORT=9880 \
 	MAX_RECENT=50 \
 	MAX_LINE_BYTES=8192
 
-EXPOSE 9000/tcp 5514/udp 8090/tcp
+EXPOSE 9000/tcp 5514/udp 8090/tcp 9880/tcp
 
 ENTRYPOINT ["java", "LogSink"]
 

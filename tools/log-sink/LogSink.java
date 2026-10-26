@@ -45,12 +45,16 @@ import com.sun.net.httpserver.HttpServer;
  * <p>제공 기능
  * <ul>
  *   <li>TCP(개행 구분) / UDP(1 데이터그램 = 1건) 수신, 건수/바이트 누적</li>
+ *   <li>HTTP 수신({@code HTTP_INGEST_PORT}): 아무 경로로 POST 하면 본문을 형식에 맞게 건별로 나눈다 — 텍스트 줄,
+ *       JSON Lines, JSON 배열, Splunk HEC, Elasticsearch _bulk, Loki push. HEC/_bulk 경로에는 그 수집기가 돌려주는
+ *       모양의 응답을 준다(테스트 도구의 HTTP 전송을 수집기 없이 확인하는 용도)</li>
  *   <li>최근 수신분을 UTF-8 / CP949(MS949) / Base64 세 가지로 동시에 미리보기
  *       — 테스트 도구의 전송 인코딩 설정이 실제로 맞게 나가는지 바로 확인할 수 있다</li>
  *   <li>브라우저로 보는 실시간 대시보드 ({@code /}) 와 JSON API ({@code /stats}, {@code /recent})</li>
  * </ul>
  *
- * <p>환경변수: {@code TCP_PORT}(9000) / {@code UDP_PORT}(5514) / {@code HTTP_PORT}(8090) /
+ * <p>환경변수: {@code TCP_PORT}(9000) / {@code UDP_PORT}(5514) / {@code HTTP_PORT}(8090, 대시보드) /
+ * {@code HTTP_INGEST_PORT}(9880, HTTP 로그 수신) /
  * {@code MAX_RECENT}(50, 메모리에 보관할 최근 항목 수) / {@code MAX_LINE_BYTES}(8192,
  * 개행이 오지 않을 때 강제로 잘라내는 안전장치).
  *
@@ -63,6 +67,10 @@ public final class LogSink {
 	private static final int TCP_PORT = intEnv("TCP_PORT", 9000);
 	private static final int UDP_PORT = intEnv("UDP_PORT", 5514);
 	private static final int HTTP_PORT = intEnv("HTTP_PORT", 8090);
+	/** HTTP 로그 수신 포트. 대시보드와 나눠야 대시보드 경로(/stats 등)와 수집 경로가 섞이지 않는다. 9880 은 Fluent Bit http 기본값. */
+	private static final int HTTP_INGEST_PORT = intEnv("HTTP_INGEST_PORT", 9880);
+	/** HTTP 요청 본문 상한. 테스트 도구의 기본 묶음(64KB)보다 넉넉하게. */
+	private static final int MAX_HTTP_BODY_BYTES = intEnv("MAX_HTTP_BODY_BYTES", 16 * 1024 * 1024);
 	private static final int MAX_RECENT = intEnv("MAX_RECENT", 50);
 	private static final int MAX_LINE_BYTES = intEnv("MAX_LINE_BYTES", 8192);
 
@@ -79,16 +87,18 @@ public final class LogSink {
 
 		Stats tcpStats = new Stats();
 		Stats udpStats = new Stats();
+		Stats httpStats = new Stats();
 		RecentBuffer recent = new RecentBuffer(MAX_RECENT);
 
 		System.out.printf(
-				"로그 수신 테스트 서버 시작 — TCP:%d  UDP:%d  대시보드: http://localhost:%d  (최근 %d건 보관)%n",
-				TCP_PORT, UDP_PORT, HTTP_PORT, MAX_RECENT);
+				"로그 수신 테스트 서버 시작 — TCP:%d  UDP:%d  HTTP 수신:%d  대시보드: http://localhost:%d  (최근 %d건 보관)%n",
+				TCP_PORT, UDP_PORT, HTTP_INGEST_PORT, HTTP_PORT, MAX_RECENT);
 
 		startTcpServer(tcpStats, recent);
 		startUdpServer(udpStats, recent);
-		startHttpServer(tcpStats, udpStats, recent);
-		startConsoleReporter(tcpStats, udpStats);
+		startHttpIngest(httpStats, recent);
+		startHttpServer(tcpStats, udpStats, httpStats, recent);
+		startConsoleReporter(tcpStats, udpStats, httpStats);
 
 		Runtime.getRuntime().addShutdownHook(new Thread(() -> System.out.println("종료합니다.")));
 
@@ -184,13 +194,170 @@ public final class LogSink {
 		recent.add(new Entry(Instant.now(), protocol, remote, raw));
 	}
 
+	// ==================== HTTP 수신 ====================
+
+	/**
+	 * HTTP 로그 수신. 경로는 가리지 않는다 — 테스트 도구의 형식별 기본 경로(/services/collector/event,
+	 * /인덱스/_bulk, /loki/api/v1/push …)를 그대로 써도 받는다. GET 은 연결 확인용으로 200 을 준다.
+	 */
+	private static void startHttpIngest(Stats stats, RecentBuffer recent) throws IOException {
+		HttpServer server = HttpServer.create(new InetSocketAddress(HTTP_INGEST_PORT), 0);
+		server.createContext("/", exchange -> {
+			try (exchange) {
+				String path = exchange.getRequestURI().getPath();
+				if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())
+						&& !"PUT".equalsIgnoreCase(exchange.getRequestMethod())) {
+					exchange.getRequestBody().readAllBytes();
+					respond(exchange, 200, "text/plain; charset=utf-8", "log-sink HTTP 수신 대기 중 — POST 로 보내세요");
+					return;
+				}
+				byte[] raw = exchange.getRequestBody().readNBytes(MAX_HTTP_BODY_BYTES);
+				String body = new String(raw, StandardCharsets.UTF_8);
+				String remote = String.valueOf(exchange.getRemoteAddress());
+				stats.requests.increment();
+				for (String record : splitHttpRecords(path, body)) {
+					record(stats, recent, "HTTP", remote, record.getBytes(StandardCharsets.UTF_8));
+				}
+				// 수집기 클라이언트(테스트 도구 포함)가 기대하는 응답 모양을 흉내 낸다.
+				if (path.contains("/services/collector")) {
+					respond(exchange, 200, "application/json", "{\"text\":\"Success\",\"code\":0}");
+				}
+				else if (path.endsWith("/_bulk")) {
+					respond(exchange, 200, "application/json", "{\"took\":0,\"errors\":false,\"items\":[]}");
+				}
+				else if (path.contains("/loki/api/v1/push")) {
+					exchange.sendResponseHeaders(204, -1);
+				}
+				else {
+					respond(exchange, 200, "text/plain; charset=utf-8", "ok");
+				}
+			}
+		});
+		server.setExecutor(Executors.newFixedThreadPool(4));
+		server.start();
+	}
+
+	/** 본문을 형식에 맞게 로그 한 건씩으로 나눈다. JSON 계열은 메시지 문자열만 꺼낸다(이스케이프 해제). */
+	static List<String> splitHttpRecords(String path, String body) {
+		List<String> records = new ArrayList<>();
+		String trimmed = body.strip();
+		if (trimmed.isEmpty()) {
+			return records;
+		}
+		if (path.endsWith("/_bulk")) {
+			// 액션 줄과 문서 줄이 번갈아 온다. 문서 줄의 message 를 꺼낸다.
+			String[] lines = trimmed.split("\n");
+			for (int i = 1; i < lines.length; i += 2) {
+				List<String> message = jsonStrings(lines[i], "message");
+				records.add(message.isEmpty() ? lines[i] : message.get(0));
+			}
+		}
+		else if (trimmed.startsWith("{\"streams\"")) {
+			records.addAll(lokiValues(trimmed));
+		}
+		else if (trimmed.startsWith("[")) {
+			records.addAll(jsonStrings(trimmed, "message"));
+		}
+		else if (trimmed.startsWith("{")) {
+			// JSON Lines 또는 HEC(이벤트 객체를 줄마다 이어 붙인 것).
+			for (String line : trimmed.split("\n")) {
+				if (line.isBlank()) {
+					continue;
+				}
+				List<String> event = jsonStrings(line, "event");
+				List<String> message = event.isEmpty() ? jsonStrings(line, "message") : event;
+				records.add(message.isEmpty() ? line : message.get(0));
+			}
+		}
+		else {
+			for (String line : body.split("\n")) {
+				if (!line.isEmpty()) {
+					records.add(line);
+				}
+			}
+		}
+		return records;
+	}
+
+	/** "key":"값" 의 값들을 순서대로 꺼낸다(외부 라이브러리 없이 필요한 만큼만). */
+	private static List<String> jsonStrings(String json, String key) {
+		List<String> values = new ArrayList<>();
+		String needle = "\"" + key + "\"";
+		int from = 0;
+		while ((from = json.indexOf(needle, from)) >= 0) {
+			int i = from + needle.length();
+			while (i < json.length() && Character.isWhitespace(json.charAt(i))) {
+				i++;
+			}
+			if (i < json.length() && json.charAt(i) == ':') {
+				i++;
+				while (i < json.length() && Character.isWhitespace(json.charAt(i))) {
+					i++;
+				}
+				if (i < json.length() && json.charAt(i) == '"') {
+					StringBuilder out = new StringBuilder();
+					from = readJsonString(json, i, out);
+					values.add(out.toString());
+					continue;
+				}
+			}
+			from = i;
+		}
+		return values;
+	}
+
+	/** Loki push 의 values: [["나노초","로그"], …] 에서 로그만 꺼낸다. */
+	private static List<String> lokiValues(String json) {
+		List<String> values = new ArrayList<>();
+		java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\[\\s*\"\\d+\"\\s*,\\s*\"").matcher(json);
+		int from = 0;
+		while (m.find(from)) {
+			StringBuilder out = new StringBuilder();
+			from = readJsonString(json, m.end() - 1, out);
+			values.add(out.toString());
+		}
+		return values;
+	}
+
+	/** start 의 여는 따옴표부터 JSON 문자열을 읽어 out 에 담고, 닫는 따옴표 다음 위치를 돌려준다. */
+	private static int readJsonString(String s, int start, StringBuilder out) {
+		int i = start + 1;
+		while (i < s.length()) {
+			char c = s.charAt(i++);
+			if (c == '"') {
+				return i;
+			}
+			if (c != '\\' || i >= s.length()) {
+				out.append(c);
+				continue;
+			}
+			char e = s.charAt(i++);
+			switch (e) {
+				case 'n' -> out.append('\n');
+				case 't' -> out.append('\t');
+				case 'r' -> out.append('\r');
+				case 'b' -> out.append('\b');
+				case 'f' -> out.append('\f');
+				case 'u' -> {
+					if (i + 4 <= s.length()) {
+						out.append((char) Integer.parseInt(s.substring(i, i + 4), 16));
+						i += 4;
+					}
+				}
+				default -> out.append(e);
+			}
+		}
+		return i;
+	}
+
 	// ==================== 콘솔 요약 출력 ====================
 
 	/** docker logs 로 지켜볼 때 쓰는 요약. 트래픽이 없으면 조용히 있는다. */
-	private static void startConsoleReporter(Stats tcp, Stats udp) {
+	private static void startConsoleReporter(Stats tcp, Stats udp, Stats http) {
 		Thread thread = new Thread(() -> {
 			long lastTcp = 0;
 			long lastUdp = 0;
+			long lastHttp = 0;
 			while (true) {
 				try {
 					Thread.sleep(2000);
@@ -201,11 +368,15 @@ public final class LogSink {
 				}
 				long curTcp = tcp.count.sum();
 				long curUdp = udp.count.sum();
-				if (curTcp != lastTcp || curUdp != lastUdp) {
-					System.out.printf("[수신 현황] TCP 누적 %,d건(%,d B, 연결 %d개) · UDP 누적 %,d건(%,d B)%n",
-							curTcp, tcp.bytes.sum(), tcp.activeConnections.get(), curUdp, udp.bytes.sum());
+				long curHttp = http.count.sum();
+				if (curTcp != lastTcp || curUdp != lastUdp || curHttp != lastHttp) {
+					System.out.printf("[수신 현황] TCP 누적 %,d건(%,d B, 연결 %d개) · UDP 누적 %,d건(%,d B)"
+									+ " · HTTP 누적 %,d건(요청 %,d개)%n",
+							curTcp, tcp.bytes.sum(), tcp.activeConnections.get(), curUdp, udp.bytes.sum(),
+							curHttp, http.requests.sum());
 					lastTcp = curTcp;
 					lastUdp = curUdp;
+					lastHttp = curHttp;
 				}
 			}
 		}, "console-reporter");
@@ -215,10 +386,10 @@ public final class LogSink {
 
 	// ==================== HTTP 대시보드 / API ====================
 
-	private static void startHttpServer(Stats tcp, Stats udp, RecentBuffer recent) throws IOException {
+	private static void startHttpServer(Stats tcp, Stats udp, Stats http, RecentBuffer recent) throws IOException {
 		HttpServer server = HttpServer.create(new InetSocketAddress(HTTP_PORT), 0);
 		server.createContext("/health", ex -> respond(ex, 200, "text/plain; charset=utf-8", "ok"));
-		server.createContext("/stats", ex -> respond(ex, 200, "application/json", toJson(statsPayload(tcp, udp))));
+		server.createContext("/stats", ex -> respond(ex, 200, "application/json", toJson(statsPayload(tcp, udp, http))));
 		server.createContext("/recent", ex -> handleRecent(ex, recent));
 		server.createContext("/", ex -> respond(ex, 200, "text/html; charset=utf-8", DASHBOARD_HTML));
 		server.setExecutor(Executors.newFixedThreadPool(4));
@@ -240,7 +411,7 @@ public final class LogSink {
 		respond(exchange, 200, "application/json", toJson(payload));
 	}
 
-	private static Map<String, Object> statsPayload(Stats tcp, Stats udp) {
+	private static Map<String, Object> statsPayload(Stats tcp, Stats udp, Stats http) {
 		Map<String, Object> payload = new LinkedHashMap<>();
 		Map<String, Object> tcpMap = new LinkedHashMap<>();
 		tcpMap.put("port", TCP_PORT);
@@ -251,8 +422,14 @@ public final class LogSink {
 		udpMap.put("port", UDP_PORT);
 		udpMap.put("count", udp.count.sum());
 		udpMap.put("bytes", udp.bytes.sum());
+		Map<String, Object> httpMap = new LinkedHashMap<>();
+		httpMap.put("port", HTTP_INGEST_PORT);
+		httpMap.put("requests", http.requests.sum());
+		httpMap.put("count", http.count.sum());
+		httpMap.put("bytes", http.bytes.sum());
 		payload.put("tcp", tcpMap);
 		payload.put("udp", udpMap);
+		payload.put("http", httpMap);
 		payload.put("startedAt", STARTED_AT.toString());
 		payload.put("uptimeSec", Duration.between(STARTED_AT, Instant.now()).getSeconds());
 		return payload;
@@ -329,6 +506,8 @@ public final class LogSink {
 		final LongAdder count = new LongAdder();
 		final LongAdder bytes = new LongAdder();
 		final AtomicInteger activeConnections = new AtomicInteger();
+		/** HTTP 전용: 받은 요청 수(한 요청에 여러 건이 들어 있다). */
+		final LongAdder requests = new LongAdder();
 	}
 
 	/** 최근 N건만 메모리에 들고 있는 원형 버퍼. 트래픽이 적다는 전제라 동기화만으로 충분하다. */
@@ -519,6 +698,7 @@ public final class LogSink {
 			  .entry { background: #1b1f24; border-left: 3px solid #3ecf8e; padding: .55rem .8rem;
 			           margin-bottom: .5rem; border-radius: 0 8px 8px 0; }
 			  .entry.udp { border-left-color: #4a90e2; }
+			  .entry.http { border-left-color: #e3a341; }
 			  .meta { color: #7a8290; font-size: .72rem; margin-bottom: .3rem; }
 			  .line { white-space: pre-wrap; word-break: break-all; line-height: 1.5; }
 			  .label { color: #4a90e2; margin-right: .5rem; font-weight: 600; font-size: .72rem; }
@@ -527,7 +707,7 @@ public final class LogSink {
 			</head>
 			<body>
 			<h1>&#x1F9EA; 로그 수신 테스트 서버</h1>
-			<div class="sub">테스트 도구에서 보낸 TCP/UDP 트래픽을 그대로 받아 확인합니다 · 1초마다 자동 새로고침</div>
+			<div class="sub">테스트 도구에서 보낸 TCP/UDP/HTTP 트래픽을 그대로 받아 확인합니다 · 1초마다 자동 새로고침</div>
 
 			<div class="stats" id="stats"></div>
 
@@ -537,6 +717,7 @@ public final class LogSink {
 			    <option value="">전체</option>
 			    <option value="tcp">TCP</option>
 			    <option value="udp">UDP</option>
+			    <option value="http">HTTP</option>
 			  </select>
 			  <button onclick="load()">지금 새로고침</button>
 			</div>
@@ -557,6 +738,8 @@ public final class LogSink {
 			      <div class="stat"><div class="label">TCP 연결</div><div class="value">${s.tcp.connections}개</div></div>
 			      <div class="stat"><div class="label">UDP 수신</div><div class="value">${s.udp.count.toLocaleString()}건</div></div>
 			      <div class="stat"><div class="label">UDP 바이트</div><div class="value">${s.udp.bytes.toLocaleString()} B</div></div>
+			      <div class="stat"><div class="label">HTTP 수신 (:${s.http.port})</div><div class="value">${s.http.count.toLocaleString()}건</div></div>
+			      <div class="stat"><div class="label">HTTP 요청</div><div class="value">${s.http.requests.toLocaleString()}개</div></div>
 			      <div class="stat"><div class="label">가동 시간</div><div class="value">${s.uptimeSec}s</div></div>`;
 
 			    const proto = document.getElementById('proto').value;

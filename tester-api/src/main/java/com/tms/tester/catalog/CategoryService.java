@@ -48,6 +48,7 @@ public class CategoryService {
 		}
 		User owner = userRepository.getReferenceById(userId);
 		Category category = new Category(owner, name, request.description());
+		category.setSortOrder(categoryRepository.maxSortOrder(userId) + 1);
 		category.setShared(request.shared());
 		category.setEncoding(request.encoding());
 		return toResponse(categoryRepository.save(category), userId);
@@ -79,6 +80,28 @@ public class CategoryService {
 	}
 
 	/** 기존 카테고리를 템플릿째 복제한다. 변형본을 빠르게 만들 때 사용한다. */
+	/**
+	 * 끌어서 바꾼 순서를 저장한다. 내 카테고리만 받는다 — 공유 카테고리는 늘 내 것 뒤에 온다.
+	 * 목록에 빠진 내 카테고리(다른 탭에서 방금 만든 것 등)는 순서를 유지한 채 뒤로 보낸다.
+	 */
+	@Transactional
+	public void reorder(Long userId, List<Long> ids) {
+		List<Category> owned = categoryRepository.findVisible(userId).stream()
+				.filter(c -> c.getOwner().getId().equals(userId))
+				.toList();
+		int index = 0;
+		for (Long id : ids) {
+			Category category = owned.stream().filter(c -> c.getId().equals(id)).findFirst()
+					.orElseThrow(() -> TesterException.forbidden("내 카테고리만 순서를 바꿀 수 있습니다: " + id));
+			category.setSortOrder(index++);
+		}
+		for (Category category : owned) {
+			if (!ids.contains(category.getId())) {
+				category.setSortOrder(index++);
+			}
+		}
+	}
+
 	@Transactional
 	public CatalogDtos.CategoryResponse duplicate(Long userId, Long categoryId, String newName) {
 		Category source = requireVisible(userId, categoryId);
@@ -88,6 +111,7 @@ public class CategoryService {
 		}
 		User owner = userRepository.getReferenceById(userId);
 		Category copy = new Category(owner, name, source.getDescription());
+		copy.setSortOrder(categoryRepository.maxSortOrder(userId) + 1);
 		copy.setEncoding(source.getEncoding());
 		for (LogTemplate template : templateRepository.findByCategoryIdOrderBySortOrderAscIdAsc(categoryId)) {
 			LogTemplate cloned = new LogTemplate(template.getName(), template.getContent());
@@ -123,6 +147,7 @@ public class CategoryService {
 		}
 		User owner = userRepository.getReferenceById(userId);
 		Category category = new Category(owner, finalName, payload.description());
+		category.setSortOrder(categoryRepository.maxSortOrder(userId) + 1);
 		category.setEncoding(payload.encoding());
 		if (payload.templates() != null) {
 			for (CatalogDtos.TemplateExport source : payload.templates()) {
@@ -167,6 +192,7 @@ public class CategoryService {
 				category.isShared(),
 				category.getOwner().getId().equals(userId),
 				(int) templateRepository.countByCategoryId(category.getId()),
+				(int) templateRepository.countByCategoryIdAndEnabledTrue(category.getId()),
 				category.getEncoding(),
 				category.getUpdatedAt());
 	}

@@ -85,6 +85,14 @@ java -jar tester-api/build/libs/tester-api.jar
 > `gradle.properties` 에 `org.gradle.parallel=true` 를 넣어 두었으니 그냥 실행하면 된다.
 > 프론트엔드만 고치는 중이라면 `backend` 를 한 번 띄워 두고 `frontend` 만 재시작하는 편이 빠르다.
 
+## 배포 방법
+
+| 환경 | 방법 |
+|---|---|
+| **인터넷망 (기본)** | Docker — 아래 §Docker 배포 |
+| **내부망, 인터넷·Docker 없음** | 오프라인 원클릭 설치본 — 아래 §내부망 오프라인 설치 |
+| 내부망, 사내 미러·레지스트리·Docker 있음 | 내부 레지스트리(192.168.70.114) 이미지 — 아래 §내부망 개발·Docker 배포 |
+
 ## Docker 배포
 
 백엔드와 프론트엔드를 각각 이미지로 빌드해 컨테이너 둘로 띄운다. 프론트엔드 컨테이너의 nginx 가
@@ -133,13 +141,57 @@ docker build -t tester-frontend tester-frontend/
 대상·작업 설정과 실행 이력이 그대로 남는다 — 컨테이너를 지우고 새로 만들어도 마찬가지다.
 완전히 초기화하려면 `docker compose down -v` 로 볼륨까지 지운다.
 
+**시간대**: 컨테이너 기본값은 UTC 라 그대로면 만든 로그의 시각이 9시간 늦게 찍힌다. compose 파일이 `TZ=Asia/Seoul`
+을 기본으로 넣는다(다른 시간대는 `.env` 에 `TZ=...`).
+
 **TESTER_JWT_SECRET 을 비워 두면**: 컨테이너가 뜰 때마다 임시 키를 새로 만든다는 경고와 함께
 기동은 되지만, 재시작할 때마다 기존 로그인 세션이 전부 무효화된다. 운영에서는 반드시 채울 것.
 
 > 이 도구는 비밀번호 없이 아이디만으로 로그인한다(§로그인). 컨테이너를 인터넷에 노출할
 > 계획이라면 `tester-frontend/nginx.conf` 에 IP 제한을 추가하거나 앞단에 별도 인증을 두어야 한다.
 
-## 내부망(폐쇄망) 배포
+## 내부망 오프라인 설치 (인터넷·Docker 없음)
+
+인터넷이 되는 빌드 PC 에서 설치본을 만들어 내부망 리눅스 서버로 옮긴 뒤, 스크립트 한 번으로
+**Java(JRE)·Node.js(npm 포함)를 호스트에 설치하고 애플리케이션을 서비스로 띄운다.** 서버에서는
+아무것도 내려받지 않는다.
+
+```bash
+./gradlew offlineBundle      # 빌드 PC (인터넷 필요 — JRE·Node 를 처음 한 번 받는다)
+# → build/distributions/tester-offline-<버전>-linux-x64.tar.gz  (약 170MB)
+```
+
+내부망 서버에서:
+
+```bash
+tar xzf tester-offline-0.0.1-SNAPSHOT-linux-x64.tar.gz
+cd tester-offline-0.0.1-SNAPSHOT-linux-x64
+sudo ./install.sh            # → http://<서버IP>  (화면 포트 변경: --web-port 8000)
+```
+
+| 구성 | Docker 배포 | 오프라인 설치 |
+|---|---|---|
+| 백엔드 | `tester-api` 컨테이너 | `tester-api` systemd 서비스 (`/opt/tester/jre` 의 Java) |
+| 화면 | nginx 컨테이너 | `tester-web` systemd 서비스 (`/opt/tester/node` 의 Node.js, `web-server.mjs`) |
+| `/api` 프록시 | nginx | 화면 서버가 백엔드(127.0.0.1:8080)로 넘김, SSE 포함 |
+
+- 관리: `testerctl status` · `testerctl logs [api|web]` · `sudo testerctl restart`
+- 설정 `/opt/tester/conf/tester.conf`(포트, JVM 옵션). JWT 서명키는 설치할 때 자동으로 만든다.
+- 업그레이드는 새 설치본으로 `sudo ./install.sh` 를 다시 실행 — 설정과 데이터(`/opt/tester/data`)는 유지.
+  제거는 `--uninstall`(데이터 남김) / `--uninstall --purge`.
+- **설치 여부 확인**: `sudo ./install.sh --check`. systemd 에 등록돼 있지 않아도 찾는다 — systemd 서비스 →
+  실행 중인 프로세스(`/proc` 의 `<경로>/app/tester-api.jar`·`web-server.mjs`) → `testerctl` 링크 →
+  환경변수 `TESTER_HOME`(`/etc/profile.d`) → 설정 파일 순으로 보고 찾은 근거를 보여 준다. 다른 경로에 설치돼
+  있으면 `install.sh` 가 그 경로를 업그레이드하고, `--prefix` 로 두 번째 설치를 시도하면 거부한다.
+- `java`·`node`·`npm` 을 `/etc/profile.d` 로 PATH 에 추가한다(기존 설치가 있으면 그쪽이 우선, `--no-path` 로 끔).
+- 요구 사항: 리눅스 x64, glibc 2.28 이상(RHEL/Rocky 8+, Ubuntu 20.04+). **CentOS 7 은 Node 24 가 돌지 않아 미지원.**
+  systemd 가 없으면 `testerctl` 이 직접 프로세스를 띄운다(재부팅 시 자동 시작은 안 됨).
+- 빌드 PC 도 인터넷이 안 되면 `-PjreUrl=` / `-PnodeUrl=` 로 내부 미러를 지정하거나({version} {os} {arch}
+  치환, 로컬 파일 경로 가능), 인터넷망에서 받은 파일을 `.runtime-cache/` 에 같은 이름으로 넣어 둔다.
+  버전은 `jreVersion=jdk-21.0.13+9`, `nodeVersion=24.22.1` 로 고정돼 있다. ARM 서버는 `-PbundleArch=aarch64`.
+- 설치본 안의 `README.txt` 에 서버 담당자용 안내가 있다.
+
+## 내부망 개발·Docker 배포 (사내 Maven/npm 미러·레지스트리가 있는 경우)
 
 ### 로컬 개발(`./gradlew dev`)을 폐쇄망에서
 
@@ -245,16 +297,17 @@ docker compose -f docker-compose.internal.yml up -d
 
 ## 로그 수신 테스트 서버 (log-sink)
 
-테스트 도구가 보낸 TCP/UDP 트래픽이 **실제로 맞게 도착하는지 눈으로 확인**하기 위한
+테스트 도구가 보낸 TCP/UDP/HTTP 트래픽이 **실제로 맞게 도착하는지 눈으로 확인**하기 위한
 테스트 전용 수신 서버. `tools/log-sink/` 에 있으며 외부 의존성 없는 순수 JDK 코드 하나로
 되어 있다 — 대용량 트래픽을 흘려보는 용도가 아니라 "보낸 그대로 잘 가는가"를 확인하는 도구다
 (초당 수만~수십만 건 처리량 검증은 `./gradlew perf` 가 이미 다룬다).
 
 ### 왜 바로 쓸 수 있는가
 
-이 sink 는 `tools/log-sink/` 의 기본 설정 그대로 `TCP 9000` / `UDP 5514` 로 뜬다.
-가입 직후 시드되는 기본 전송 대상은 예제용 사설 IP(`192.168.70.110~114`, `192.168.70.140~145`, UDP 514)라
-이 sink 를 바로 가리키지는 않으므로, sink 로 테스트하려면 **전송 대상**에서
+이 sink 는 `tools/log-sink/` 의 기본 설정 그대로 `TCP 9000` / `UDP 5514` / `HTTP 9880`(수신) 으로 뜬다.
+HTTP 는 경로를 가리지 않고 받으며 본문을 형식(텍스트 줄·JSON Lines·JSON 배열·Splunk HEC·ES _bulk·Loki)에 맞게
+건별로 나눠 보여 준다 — 수집기를 설치하지 않고도 HTTP 전송을 확인할 수 있다.
+가입해도 전송 대상은 비어 있으므로(기본 대상을 미리 넣지 않는다), sink 로 테스트하려면 **전송 대상**에서
 `UDP 127.0.0.1:5514` (또는 `TCP 127.0.0.1:9000`)를 한 번 추가해 두면 된다.
 
 ### 띄우기
@@ -282,9 +335,11 @@ docker compose down     # 종료
 2. **전송 대상** → `+ 대상 추가` → `UDP 127.0.0.1:5514`(또는 `TCP 127.0.0.1:9000`) 등록
 3. **전송 콘솔** → `+ 새 작업` → 카테고리는 아무거나(예: `tomcat`), 방금 만든 대상 선택
 4. EPS 는 낮게 (예: 10~100 — 어차피 대량 트래픽 테스트가 아니다) → 저장 → 시작
+   작업 카드에서 **보내는 로그 → 받는 곳**, 로그 종류별 **실제 전송 비율**, `예시 보기` 로 렌더 결과를 바로 확인할 수 있다
+   (라운드로빈/순차는 가중치와 무관하게 균등 — 가중치대로 섞으려면 선택 방식을 가중치 랜덤으로)
 5. http://localhost:8090 을 열어서 로그가 실제로 들어오는지, 내용이 의도한 대로인지 확인
 
-전송 대상을 CP949/Base64 인코딩으로 바꿔서 보내면(§전송 인코딩), 대시보드가 UTF-8/CP949/
+템플릿 카테고리의 인코딩을 CP949/Base64 로 바꿔서 보내면(§전송 인코딩), 대시보드가 UTF-8/CP949/
 Base64 세 가지로 동시에 미리보기를 보여주므로 **인코딩이 실제로 맞게 나가는지**도 바로
 확인된다 — 엉뚱한 인코딩으로 보내면 UTF-8 칸이 깨져 보이고 맞는 칸만 정상으로 보인다.
 
@@ -353,6 +408,39 @@ ${ip as cip} - - [${ts(dd/MMM/yyyy:HH:mm:ss Z,en)}] "${choice(GET:70,POST:30)} /
 
 전체 목록은 실행 후 `GET /api/meta/functions` 또는 템플릿 화면의 "함수" 탭에서 확인한다.
 
+템플릿 화면에서는:
+- 카테고리와 로그 종류를 **끌어서 순서를 바꾼다**(순차/라운드로빈은 이 순서로 보낸다).
+- `${` 를 치면 커서 위치에 함수 목록이 뜬다. Enter/Tab 으로 넣으면 인자 부분이 선택돼 바로 고쳐 쓴다.
+- `${...}` 가 함수 종류별 색으로 칠해지고, 커서를 올린 함수의 설명·예시가 편집기 아래에 나온다.
+- **렌더 결과**의 색칠된 값이 매번 바뀌는 부분이다. 마우스를 올리면 원문의 같은 자리가 강조되고,
+  누르면 그 `${...}` 가 선택된다. **사용된 값** 탭은 쓰인 함수와 실제로 나온 값들을 표로 보여 준다.
+- 함수 인자 안에 `${...}` 를 넣는 것(`${choice(a,${dict(x)})}`)은 지원하지 않는다 — 저장할 때 오류로 알려 준다.
+
+## HTTP 전송
+
+전송 대상의 프로토콜을 **HTTP / HTTPS** 로 고르면 로그를 모아 POST 요청으로 보낸다. 본문 형식을 고르면 그 수집기의
+기본 경로·포트가 채워진다.
+
+| 본문 형식 | 받는 쪽 예 | 기본 경로 · 포트 | 본문 |
+|---|---|---|---|
+| 텍스트 줄 | Logstash http(line), Vector | `/` · 8080 | 로그를 줄바꿈으로 이어 붙임 |
+| JSON Lines | Vector, Logstash json_lines | `/` · 8080 | 줄마다 `{"message":"…"}` |
+| JSON 배열 | Fluent Bit http 입력 | `/` · 9880 | `[{"message":"…"}, …]` |
+| Splunk HEC | Splunk | `/services/collector/event` · 8088 | `{"event":"…"}` 를 이어 붙임 |
+| ES / OpenSearch _bulk | Elasticsearch, OpenSearch | `/logs-tester/_bulk` · 9200 | 액션 줄 + `{"@timestamp","message"}` |
+| Grafana Loki | Loki | `/loki/api/v1/push` · 3100 | `{"streams":[{"stream":{"job":"tester"},"values":[…]}]}` |
+
+- 인증은 **추가 헤더**에 한 줄씩 적는다: `Authorization: Splunk <토큰>`, `Authorization: ApiKey <키>`, `X-Scope-OrgID: <테넌트>` 등.
+- 커넥션마다 keep-alive 로 요청을 하나씩 보내고, 응답을 기다리는 동안 들어온 로그는 다음 요청에 묶는다. 그래서 속도가
+  높을수록 요청당 건수가 저절로 늘어난다(요청당 최대 본문은 고급 설정, 기본 64KB).
+- **4xx/5xx 응답**을 받은 요청의 로그는 전송이 아니라 **버림**으로 집계하고, 상태 코드와 응답 내용(예: `HTTP 403 Forbidden — Invalid token`)을 전송 콘솔에 보여 준다.
+- **연결 테스트**는 같은 경로로 GET 을 보내 HTTP 서버가 응답하는지 본다(대개 405 — 정상). 401/403 이면 인증 실패로 알린다.
+- JSON 형식은 로그 한 건을 문자열로 감싸므로 여러 줄 로그(스택트레이스)도 한 건으로 간다. JSON 은 UTF-8 이어야 하므로
+  CP949 카테고리는 텍스트 줄 형식으로 보내거나 Base64 로 쓴다.
+- HTTPS 는 TLS 와 같이 인증서를 검증하지 않는다(자체 서명 인증서를 쓰는 내부 수집기용).
+- 대상은 프로토콜+호스트+포트로 구분하므로, 같은 서버·포트의 다른 경로(예: 인덱스 두 개)는 따로 등록할 수 없다.
+- 로컬에서는 log-sink 의 `HTTP 127.0.0.1:9880` 으로 바로 시험할 수 있다(§로그 수신 테스트 서버).
+
 ## 전송 인코딩 (카테고리별)
 
 수신 서버가 기대하는 바이트 형식을 **전송 대상**에서 고른다(프레이밍 바로 옆).
@@ -385,6 +473,12 @@ ${ip as cip} - - [${ts(dd/MMM/yyyy:HH:mm:ss Z,en)}] "${choice(GET:70,POST:30)} /
 
 **비밀번호가 없다.** 아이디만 알면 누구나 로그인할 수 있으므로 반드시 내부망에서만 운영하고,
 외부에 노출된다면 `deploy/nginx.conf` 의 `allow/deny` 주석을 풀어 접근 대역을 제한할 것.
+
+**TCP/TLS 수신 서버가 꺼져도 전송 작업은 멈추지 않는다.** 시작할 때 꺼져 있어도 시작하고, 실행 중에
+꺼지면 작업 카드에 "자동으로 다시 연결하는 중"이 뜬 채 계속 시도한다(최대 3초 간격). 서버가 뜨면
+바로 이어서 보낸다. 그동안 만든 로그는 포화 정책이 **버림**이면 버리고(버림 건수에 잡힌다), **대기**면
+생성을 멈추고 기다린다. 대상 주소가 맞는지 확인하려면 전송 대상 화면의 **연결 테스트**를 쓴다 —
+이쪽은 지금도 연결이 안 되면 실패로 알려 준다.
 
 고부하(10만 EPS 이상) 실행 전 권장 커널 설정:
 

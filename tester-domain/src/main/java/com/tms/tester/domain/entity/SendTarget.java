@@ -1,6 +1,7 @@
 package com.tms.tester.domain.entity;
 
 import com.tms.tester.common.Framing;
+import com.tms.tester.common.HttpFormat;
 import com.tms.tester.common.Protocol;
 
 import jakarta.persistence.Column;
@@ -60,6 +61,20 @@ public class SendTarget extends BaseEntity {
 
 	@Column(nullable = false)
 	private int connectTimeoutMs = 3000;
+
+	// ---- HTTP/HTTPS 전용. 다른 프로토콜은 쓰지 않는다. NOT NULL 컬럼 추가라 기본값을 컬럼 정의에 둔다. ----
+
+	/** 요청 경로(쿼리 포함 가능). 예: /services/collector/event */
+	@Column(name = "http_path", nullable = false, length = 500, columnDefinition = "varchar(500) default '/'")
+	private String httpPath = "/";
+
+	@Enumerated(EnumType.STRING)
+	@Column(name = "http_format", nullable = false, length = 20, columnDefinition = "varchar(20) default 'LINES'")
+	private HttpFormat httpFormat = HttpFormat.LINES;
+
+	/** 추가 헤더. 한 줄에 "이름: 값". 인증 토큰이 들어갈 수 있다. */
+	@Column(name = "http_headers", nullable = false, length = 2000, columnDefinition = "varchar(2000) default ''")
+	private String httpHeaders = "";
 
 	protected SendTarget() {
 	}
@@ -157,7 +172,35 @@ public class SendTarget extends BaseEntity {
 		this.connectTimeoutMs = connectTimeoutMs;
 	}
 
+	public String getHttpPath() {
+		return httpPath;
+	}
+
+	public void setHttpPath(String httpPath) {
+		this.httpPath = httpPath;
+	}
+
+	public HttpFormat getHttpFormat() {
+		return httpFormat;
+	}
+
+	public void setHttpFormat(HttpFormat httpFormat) {
+		this.httpFormat = httpFormat;
+	}
+
+	public String getHttpHeaders() {
+		return httpHeaders;
+	}
+
+	public void setHttpHeaders(String httpHeaders) {
+		this.httpHeaders = httpHeaders;
+	}
+
+	/** 표시용 주소. HTTP 는 URL 그대로(http://host:port/path). */
 	public String endpoint() {
+		if (Protocol.isHttp(protocol)) {
+			return protocol.toLowerCase(java.util.Locale.ROOT) + "://" + host + ":" + port + httpPath;
+		}
 		return protocol + "://" + host + ":" + port;
 	}
 }

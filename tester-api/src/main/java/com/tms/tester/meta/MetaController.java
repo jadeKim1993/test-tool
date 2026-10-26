@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.tms.tester.common.Framing;
+import com.tms.tester.common.HttpFormat;
 import com.tms.tester.common.LogFormat;
 import com.tms.tester.common.OverflowPolicy;
 import com.tms.tester.common.SelectionStrategy;
@@ -68,6 +69,20 @@ public class MetaController {
 		return result;
 	}
 
+	/** HTTP 본문 형식. 화면이 형식을 고르면 그 수집기의 기본 경로·포트를 채운다. */
+	public record HttpFormatOption(String value, String label, String contentType, String defaultPath,
+			int defaultPort) {
+	}
+
+	private List<HttpFormatOption> httpFormatOptions() {
+		List<HttpFormatOption> result = new ArrayList<>();
+		for (HttpFormat format : HttpFormat.values()) {
+			result.add(new HttpFormatOption(format.name(), format.label(), format.contentType(),
+					format.defaultPath(), format.defaultPort()));
+		}
+		return result;
+	}
+
 	@GetMapping("/options")
 	public Map<String, Object> options() {
 		return Map.of(
@@ -88,6 +103,7 @@ public class MetaController {
 						new EnumOption(OverflowPolicy.DROP.name(), "버리고 속도 유지 (수신측 한계 확인)"),
 						new EnumOption(OverflowPolicy.BLOCK.name(), "대기 (유실 없이 최대 속도)")),
 				"encodings", encodingOptions(),
+				"httpFormats", httpFormatOptions(),
 				"dictionaries", Dictionaries.names(),
 				"transport", nettyRuntime.transportName(),
 				"cpuCores", Runtime.getRuntime().availableProcessors());

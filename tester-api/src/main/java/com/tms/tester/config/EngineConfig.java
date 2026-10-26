@@ -52,8 +52,9 @@ public class EngineConfig {
 		return registry;
 	}
 
+	/** 저장·미리보기용. 중첩 플레이스홀더처럼 조용히 잘못 렌더되는 문법을 오류로 막는다. */
 	@Bean
 	public TemplateCompiler templateCompiler(ValueWriterRegistry registry) {
-		return new TemplateCompiler(registry);
+		return new TemplateCompiler(registry, true);
 	}
 }

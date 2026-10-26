@@ -24,12 +24,14 @@ import Tabs from '@mui/material/Tabs';
 import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
+import { alpha, useTheme } from '@mui/material/styles';
 
 import AddIcon from '@mui/icons-material/Add';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlined';
 import DoNotDisturbOnOutlinedIcon from '@mui/icons-material/DoNotDisturbOnOutlined';
 import DownloadIcon from '@mui/icons-material/Download';
+import DragIndicatorIcon from '@mui/icons-material/DragIndicator';
 import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
 import NoteAddOutlinedIcon from '@mui/icons-material/NoteAddOutlined';
@@ -38,6 +40,7 @@ import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
 import SearchIcon from '@mui/icons-material/Search';
 import ShareOutlinedIcon from '@mui/icons-material/ShareOutlined';
 import TuneIcon from '@mui/icons-material/Tune';
+import UndoIcon from '@mui/icons-material/Undo';
 import UploadIcon from '@mui/icons-material/Upload';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 
@@ -46,6 +49,10 @@ import type {
   Category, FunctionSpec, LogFormat, LogTemplate, MetaOptions, PreviewResponse, WireEncoding,
 } from '../api/types';
 import { EmptyState, ErrorAlert, Loading, useConfirm, useToast } from '../components/common';
+import { useDragReorder } from '../components/dragReorder';
+import { useHotkey } from '../hooks/useHotkey';
+import { TemplateEditor } from '../components/TemplateEditor';
+import { colorOf, specOf } from '../components/templateSyntax';
 import { MONO } from '../theme';
 
 /**
@@ -69,8 +76,11 @@ export default function Templates() {
   const [options, setOptions] = useState<MetaOptions | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [bottomTab, setBottomTab] = useState<'preview' | 'help'>('preview');
+  const [bottomTab, setBottomTab] = useState<'preview' | 'values' | 'help'>('preview');
+  /** 렌더 결과/값 목록에서 마우스를 올린 플레이스홀더. 편집기 원문의 같은 부분을 진하게 칠한다. */
+  const [activePh, setActivePh] = useState<number | null>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
+  const specs = useMemo(() => new Map(functions.map((f) => [f.name, f])), [functions]);
 
   const currentCategory = categories.find((c) => c.id === categoryId) ?? null;
   const readOnly = currentCategory ? !currentCategory.owned : true;
@@ -127,6 +137,21 @@ export default function Templates() {
       || draft.format !== selected.format || draft.weight !== selected.weight;
   }, [draft, selected]);
 
+  /** 저장 안 한 수정이 있으면 다른 종류/카테고리로 옮기기 전에 묻는다. 예전엔 말없이 버려졌다. */
+  const confirmDiscard = useCallback(async () => !dirty || confirm({
+    title: '저장하지 않은 변경이 있습니다',
+    message: <><strong>{draft.name || '새 로그 종류'}</strong> 의 수정 내용을 버리고 이동할까요?</>,
+    confirmLabel: '버리고 이동',
+    danger: true,
+  }), [dirty, confirm, draft.name]);
+
+  useEffect(() => {
+    if (!dirty) return;
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [dirty]);
+
   const save = useCallback(async () => {
     if (!categoryId || !draft.content || !draft.name || readOnly) return;
     try {
@@ -160,15 +185,76 @@ export default function Templates() {
     return () => window.removeEventListener('keydown', handler);
   }, [save]);
 
-  const select = (template: LogTemplate) => {
+  const select = async (template: LogTemplate) => {
+    if (template.id === selectedId || !(await confirmDiscard())) return;
     setSelectedId(template.id);
     setDraft({ ...template });
   };
 
-  const startNew = () => {
+  const selectCategory = async (id: number) => {
+    if (id === categoryId || !(await confirmDiscard())) return;
+    setCategoryId(id);
+  };
+
+  const startNew = async () => {
+    if (!(await confirmDiscard())) return;
     setSelectedId(null);
     setDraft({ name: '', content: '', format: 'RAW', weight: 1, enabled: true });
     requestAnimationFrame(() => editorRef.current?.focus());
+  };
+
+  /** 지금 편집기 내용(저장 전 수정 포함)으로 새 종류를 만든다. 비슷한 로그를 하나 더 만들 때 가장 빠르다. */
+  const duplicateTemplate = () => {
+    setSelectedId(null);
+    setDraft((prev) => ({ ...prev, id: undefined, name: `${prev.name ?? ''}-copy`, sortOrder: undefined }));
+    toast.ok('복제본을 만들었습니다. 이름을 확인하고 저장하세요.');
+  };
+
+  const revert = () => {
+    if (selected) setDraft({ ...selected });
+  };
+
+  /**
+   * 끌어서 바꾼 로그 종류 순서. 화면을 먼저 바꾸고 저장한다(실패하면 다시 읽는다).
+   * 편집 중인 종류의 sortOrder 도 맞춰 둔다 — 안 그러면 다음 저장 때 옛 위치로 되돌아간다.
+   */
+  const reorderTemplates = async (ids: number[]) => {
+    if (!categoryId) return;
+    const byId = new Map(templates.map((t) => [t.id, t]));
+    setTemplates(ids.map((id, index) => ({ ...byId.get(id)!, sortOrder: index })));
+    if (selectedId !== null && ids.includes(selectedId)) {
+      setDraft((prev) => ({ ...prev, sortOrder: ids.indexOf(selectedId) }));
+    }
+    try {
+      await api.reorderTemplates(categoryId, ids);
+    } catch (e) {
+      setError((e as Error).message);
+      loadTemplates(categoryId, true);
+    }
+  };
+  const templateDrag = useDragReorder(templates.map((t) => t.id), reorderTemplates);
+
+  /** 끌어서 바꾼 카테고리 순서. 내 카테고리만 옮길 수 있고 공유 카테고리는 늘 그 뒤에 둔다. */
+  const reorderCategories = async (ids: number[]) => {
+    const byId = new Map(categories.map((c) => [c.id, c]));
+    setCategories([...ids.map((id) => byId.get(id)!), ...categories.filter((c) => !c.owned)]);
+    try {
+      await api.reorderCategories(ids);
+    } catch (e) {
+      setError((e as Error).message);
+      setCategories(await api.categories());
+    }
+  };
+
+  /** 렌더 결과에서 값을 누르면 그 값을 만든 원문 플레이스홀더를 편집기에서 선택한다. */
+  const pickPlaceholder = (index: number) => {
+    const ph = preview?.placeholders[index];
+    const editor = editorRef.current;
+    // 미리보기는 300ms 늦게 오므로 그 사이 원문이 바뀌었으면 위치가 맞지 않는다.
+    if (!ph || !editor || (draft.content ?? '').slice(ph.start, ph.end) !== ph.expression) return;
+    editor.blur();
+    editor.setSelectionRange(ph.start, ph.end);
+    editor.focus();
   };
 
   /** 목록에서 바로 켜고 끈다. 편집기를 열 필요가 없다. */
@@ -235,8 +321,15 @@ export default function Templates() {
     });
   };
 
+  useHotkey('n', () => { if (!readOnly && currentCategory) startNew(); });
+
   const enabledCount = templates.filter((t) => t.enabled).length;
   const totalWeight = templates.filter((t) => t.enabled).reduce((sum, t) => sum + t.weight, 0);
+  // 편집 중인 가중치를 반영한 비율. 저장 전에 "이 값이면 몇 %인지" 바로 보이게 한다.
+  const otherWeight = templates.filter((t) => t.enabled && t.id !== selectedId).reduce((sum, t) => sum + t.weight, 0);
+  const draftWeight = Math.max(0, draft.weight ?? 0);
+  const draftShare = (draft.enabled ?? true) && otherWeight + draftWeight > 0
+    ? Math.round(draftWeight / (otherWeight + draftWeight) * 100) : null;
 
   if (loading) return <Loading />;
 
@@ -256,7 +349,8 @@ export default function Templates() {
           categories={categories}
           selectedId={categoryId}
           options={options}
-          onSelect={setCategoryId}
+          onSelect={selectCategory}
+          onReorder={reorderCategories}
           onChanged={async () => setCategories(await api.categories())}
           onError={setError}
           toast={toast}
@@ -277,7 +371,7 @@ export default function Templates() {
                   </Box>
                 )}
               </Typography>
-              <Tooltip title="로그 종류 추가">
+              <Tooltip title="로그 종류 추가 (N)">
                 <span>
                   <IconButton size="small" color="primary" aria-label="로그 종류 추가"
                               disabled={readOnly} onClick={startNew}>
@@ -287,6 +381,11 @@ export default function Templates() {
               </Tooltip>
             </Stack>
 
+            {templates.length > 1 && !readOnly && (
+              <Typography variant="caption" color="textSecondary" sx={{ display: 'block', mt: 0.25 }}>
+                끌어서 순서를 바꿉니다 · 순차/라운드로빈은 이 순서로 보냅니다
+              </Typography>
+            )}
             {templates.length > 0 && (
               <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
                 <Button fullWidth variant="outlined" color="success" startIcon={<PlaylistAddCheckIcon />}
@@ -312,10 +411,12 @@ export default function Templates() {
               }}>
                 <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
                   <NoteAddOutlinedIcon fontSize="small" color="primary" />
-                  <Typography variant="body2" sx={{ fontWeight: 600 }}>새 로그 종류</Typography>
+                  <Typography variant="body2" noWrap sx={{ fontWeight: 600 }}>
+                    {draft.name || '새 로그 종류'}
+                  </Typography>
                 </Stack>
                 <Typography variant="caption" color="textSecondary">
-                  오른쪽에서 이름과 내용을 입력하세요
+                  저장 전 · 오른쪽에서 이름과 내용을 입력하세요
                 </Typography>
               </Box>
             )}
@@ -332,6 +433,7 @@ export default function Templates() {
                 <Box
                   key={template.id}
                   onClick={() => select(template)}
+                  {...templateDrag.itemProps(template.id, !readOnly)}
                   sx={{
                     px: 1.5, py: 1, cursor: 'pointer',
                     borderLeft: 3,
@@ -340,9 +442,15 @@ export default function Templates() {
                     bgcolor: selectedId === template.id ? 'action.selected' : undefined,
                     opacity: template.enabled ? 1 : 0.5,
                     '&:hover': { bgcolor: 'action.hover' },
+                    '&:hover .drag-handle': { opacity: 1 },
+                    ...templateDrag.itemSx(template.id),
                   }}
                 >
                   <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+                    {!readOnly && (
+                      <DragIndicatorIcon className="drag-handle" titleAccess="끌어서 순서 바꾸기"
+                                         sx={{ fontSize: 16, ml: -1, mr: -0.5, color: 'text.disabled', cursor: 'grab', opacity: 0.5 }} />
+                    )}
                     <Tooltip title={template.enabled ? '전송에 포함됨' : '전송에서 제외됨'}>
                       <Switch
                         size="small" checked={template.enabled} disabled={readOnly}
@@ -352,6 +460,12 @@ export default function Templates() {
                     </Tooltip>
                     <Typography variant="body2" noWrap sx={{ fontWeight: 600, flex: 1, minWidth: 0 }}>
                       {template.name}
+                      {selectedId === template.id && dirty && (
+                        <Box component="span" title="저장하지 않은 변경이 있습니다"
+                             sx={{ ml: 0.75, color: 'warning.main', fontSize: '0.7rem', fontWeight: 600 }}>
+                          ● 수정 중
+                        </Box>
+                      )}
                     </Typography>
                     <Chip variant="outlined" label={share !== null ? `${share}%` : template.weight}
                           title={share !== null ? `전체의 약 ${share}%` : '가중치'} />
@@ -401,32 +515,21 @@ export default function Templates() {
                 </TextField>
                 <TextField label="가중치" type="number" disabled={readOnly}
                            sx={{ flex: '0 0 96px' }}
-                           title="같은 카테고리 안에서 이 종류가 뽑힐 상대 비중입니다"
+                           title="같은 카테고리 안에서 이 종류가 뽑힐 상대 비중입니다 (가중치 랜덤 작업에만 적용)"
                            value={draft.weight ?? 1}
                            onChange={(e) => setDraft((p) => ({ ...p, weight: Number(e.target.value) }))} />
               </Stack>
 
-              <TextField
-                multiline
-                fullWidth
-                minRows={12}
-                maxRows={12}
-                inputRef={editorRef}
-                spellCheck={false}
-                disabled={readOnly}
-                error={Boolean(preview?.error)}
-                helperText={preview?.error ?? ' '}
+              <TemplateEditor
                 value={draft.content ?? ''}
-                placeholder={'로그 한 줄을 작성하고, 랜덤 값 자리에 ${ip} ${int(1,100)} 같은 함수를 넣으세요'}
-                onChange={(e) => setDraft((p) => ({ ...p, content: e.target.value }))}
-                slotProps={{
-                  htmlInput: {
-                    style: {
-                      fontFamily: MONO, fontSize: '0.82rem', lineHeight: 1.6,
-                      whiteSpace: 'pre', overflowWrap: 'normal', overflowX: 'auto',
-                    },
-                  },
-                }}
+                onChange={(content) => setDraft((p) => ({ ...p, content }))}
+                functions={functions}
+                disabled={readOnly}
+                error={draft.content ? preview?.error : null}
+                errorPosition={preview?.position}
+                activeIndex={activePh}
+                inputRef={editorRef}
+                placeholder={'로그 한 줄을 그대로 붙여 넣고, 바뀌어야 할 자리를 ${ip} ${int(1,100)} 같은 함수로 바꾸세요'}
               />
 
               <Stack direction="row" spacing={1} useFlexGap sx={{ alignItems: 'center', flexWrap: 'wrap' }}>
@@ -438,14 +541,34 @@ export default function Templates() {
                   </Stack>
                 </Tooltip>
                 <Box sx={{ flex: 1 }} />
-                {preview && !preview.error && (
-                  <Typography variant="caption" color="textSecondary" sx={{ fontFamily: MONO }}>
-                    평균 {preview.averageBytes} B/건
-                  </Typography>
+                <Typography variant="caption" color="textSecondary">
+                  {draftShare !== null && (
+                    <span title="이 카테고리에서 사용 중인 종류들의 가중치 합 대비. 라운드로빈/순차 작업은 가중치와 무관하게 균등합니다">
+                      가중치 랜덤 시 약 <strong>{draftShare}%</strong>
+                    </span>
+                  )}
+                  {draftShare !== null && preview && !preview.error && ' · '}
+                  {preview && !preview.error && (
+                    <Box component="span" sx={{ fontFamily: MONO }}>평균 {preview.averageBytes} B/건</Box>
+                  )}
+                </Typography>
+                {selectedId && dirty && !readOnly && (
+                  <Tooltip title="저장된 내용으로 되돌리기">
+                    <IconButton size="small" onClick={revert} aria-label="되돌리기">
+                      <UndoIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                )}
+                {selectedId && !readOnly && (
+                  <Tooltip title="이 내용으로 새 로그 종류 만들기">
+                    <IconButton size="small" onClick={duplicateTemplate} aria-label="복제">
+                      <ContentCopyIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
                 )}
                 {selectedId && !readOnly && (
                   <Tooltip title="삭제">
-                    <IconButton size="small" color="error" onClick={remove}>
+                    <IconButton size="small" color="error" onClick={remove} aria-label="삭제">
                       <DeleteOutlineIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
@@ -462,6 +585,7 @@ export default function Templates() {
             <Stack direction="row" sx={{ alignItems: 'center', px: 1.5 }}>
               <Tabs value={bottomTab} onChange={(_, value) => setBottomTab(value)} sx={{ flex: 1, minHeight: 42 }}>
                 <Tab value="preview" label="렌더 결과" sx={{ minHeight: 42 }} />
+                <Tab value="values" label={`사용된 값 ${preview?.placeholders.length ?? 0}개`} sx={{ minHeight: 42 }} />
                 <Tab value="help" label={`함수 ${functions.length}개`} sx={{ minHeight: 42 }} />
               </Tabs>
               {bottomTab === 'preview' && (
@@ -474,9 +598,15 @@ export default function Templates() {
             <Divider />
 
             <Box sx={{ p: 1.5 }}>
-              {bottomTab === 'preview'
-                ? <PreviewPane preview={preview} count={previewCount} />
-                : <FunctionHelp functions={functions} onInsert={insert} />}
+              {bottomTab === 'preview' && (
+                <PreviewPane preview={preview} count={previewCount} specs={specs} activeIndex={activePh}
+                             onHover={setActivePh} onPick={pickPlaceholder} />
+              )}
+              {bottomTab === 'values' && (
+                <PlaceholderTable preview={preview} specs={specs} activeIndex={activePh}
+                                  onHover={setActivePh} onPick={pickPlaceholder} />
+              )}
+              {bottomTab === 'help' && <FunctionHelp functions={functions} onInsert={insert} />}
             </Box>
           </Paper>
         )}
@@ -488,7 +618,22 @@ export default function Templates() {
   );
 }
 
-function PreviewPane({ preview, count }: { preview: PreviewResponse | null; count: number }) {
+interface LinkProps {
+  specs: Map<string, FunctionSpec>;
+  activeIndex: number | null;
+  onHover: (index: number | null) => void;
+  onPick: (index: number) => void;
+}
+
+/**
+ * 렌더 결과. 값마다 그것을 만든 플레이스홀더의 색을 입히고, 마우스를 올리면 원문의 같은 자리를,
+ * 누르면 편집기에서 그 플레이스홀더를 선택한다 — "이 숫자는 어디서 나왔지?"를 바로 찾게 한다.
+ */
+function PreviewPane({ preview, count, specs, activeIndex, onHover, onPick }: LinkProps & {
+  preview: PreviewResponse | null;
+  count: number;
+}) {
+  const theme = useTheme();
   if (preview?.error) {
     return <Alert severity="error">{preview.error}</Alert>;
   }
@@ -515,16 +660,92 @@ function PreviewPane({ preview, count }: { preview: PreviewResponse | null; coun
               fontFamily: MONO, fontSize: '0.76rem', lineHeight: 1.55, m: 0,
               whiteSpace: 'pre-wrap', wordBreak: 'break-all', flex: 1,
             }}>
-              {line}
+              {(preview.parts[index] ?? [{ text: line, source: -1 }]).map((part, i) => {
+                if (part.source === -1) return <span key={i}>{part.text}</span>;
+                if (part.source === -2) {
+                  return (
+                    <Box key={i} component="span" title="포맷(syslog)이 자동으로 붙인 헤더"
+                         sx={{ color: 'text.secondary', textDecoration: 'underline dotted', textUnderlineOffset: '3px' }}>
+                      {part.text}
+                    </Box>
+                  );
+                }
+                const ph = preview.placeholders[part.source];
+                const main = theme.palette[colorOf(ph?.function, specs)].main;
+                const active = activeIndex === part.source;
+                return (
+                  <Box key={i} component="span" title={`${ph?.expression ?? ''} — 누르면 원문에서 선택`}
+                       onMouseEnter={() => onHover(part.source)} onMouseLeave={() => onHover(null)}
+                       onClick={() => onPick(part.source)}
+                       sx={{
+                         color: main, cursor: 'pointer', borderRadius: '3px',
+                         bgcolor: alpha(main, active ? 0.3 : 0.1),
+                         boxShadow: active ? `0 0 0 1px ${main}` : undefined,
+                       }}>
+                    {part.text}
+                  </Box>
+                );
+              })}
             </Typography>
           </Stack>
         ))}
       </Box>
       <Typography variant="caption" color="textSecondary" sx={{ mt: 1, display: 'block' }}>
-        같은 템플릿을 {count}번 렌더링한 결과입니다 — 매번 랜덤 값이 달라집니다.
+        같은 템플릿을 {count}번 렌더링한 결과입니다 — 색칠된 부분이 매번 바뀌는 값이고, 누르면 원문에서 찾아 줍니다.
         전송 건수는 여기 표시된 개수와 무관하며 작업의 EPS 설정을 따릅니다.
       </Typography>
     </>
+  );
+}
+
+/** 이 템플릿에 쓰인 플레이스홀더 목록. 원문을 해석하지 않아도 "어떤 값이 어떤 규칙으로" 들어가는지 표로 본다. */
+function PlaceholderTable({ preview, specs, activeIndex, onHover, onPick }: LinkProps & {
+  preview: PreviewResponse | null;
+}) {
+  if (preview?.error) {
+    return <Alert severity="error">{preview.error}</Alert>;
+  }
+  if (!preview || preview.placeholders.length === 0) {
+    return <EmptyState icon={<VisibilityOutlinedIcon />} title="사용된 함수가 없습니다"
+                       hint="고정 문자열만 있으면 매번 같은 로그가 나갑니다" />;
+  }
+  // 렌더 결과 여러 줄에서 실제로 나온 값을 모아, 값이 어떻게 흔들리는지 보여 준다.
+  const samples = preview.placeholders.map((_, index) => {
+    const values = preview.parts.flatMap((line) => line.filter((p) => p.source === index).map((p) => p.text));
+    return [...new Set(values)].slice(0, 4);
+  });
+  return (
+    <Box sx={{ maxHeight: 300, overflowY: 'auto' }}>
+      {preview.placeholders.map((ph, index) => {
+        const spec = specOf(ph.function, specs);
+        return (
+          <Box key={index}
+               onMouseEnter={() => onHover(index)} onMouseLeave={() => onHover(null)}
+               onClick={() => onPick(index)}
+               title="누르면 원문에서 선택"
+               sx={{
+                 display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 3fr)', gap: 1.5,
+                 px: 1, py: 0.75, borderRadius: 1, cursor: 'pointer',
+                 bgcolor: activeIndex === index ? 'action.selected' : undefined,
+                 '&:hover': { bgcolor: 'action.hover' },
+               }}>
+            <Typography noWrap sx={{
+              fontFamily: MONO, fontSize: '0.78rem', color: `${colorOf(ph.function, specs)}.main`,
+            }}>
+              {ph.expression}
+            </Typography>
+            <Box sx={{ minWidth: 0 }}>
+              <Typography variant="caption" color="textSecondary" noWrap sx={{ display: 'block' }}>
+                {spec?.description ?? ph.function}
+              </Typography>
+              <Typography variant="caption" noWrap sx={{ display: 'block', fontFamily: MONO }}>
+                {samples[index].map((v) => JSON.stringify(v).slice(1, -1)).join('  ·  ')}
+              </Typography>
+            </Box>
+          </Box>
+        );
+      })}
+    </Box>
   );
 }
 
@@ -611,11 +832,12 @@ function FunctionHelp({ functions, onInsert }: {
   );
 }
 
-function CategoryPanel({ categories, selectedId, options, onSelect, onChanged, onError, toast, confirm }: {
+function CategoryPanel({ categories, selectedId, options, onSelect, onReorder, onChanged, onError, toast, confirm }: {
   categories: Category[];
   selectedId: number | null;
   options: MetaOptions | null;
   onSelect: (id: number) => void;
+  onReorder: (ids: number[]) => void;
   onChanged: () => Promise<void>;
   onError: (message: string) => void;
   toast: { ok: (text: string) => void };
@@ -626,6 +848,7 @@ function CategoryPanel({ categories, selectedId, options, onSelect, onChanged, o
   const [name, setName] = useState('');
   const [menu, setMenu] = useState<{ anchor: HTMLElement; category: Category } | null>(null);
   const [settings, setSettings] = useState<Category | null>(null);
+  const drag = useDragReorder(categories.filter((c) => c.owned).map((c) => c.id), onReorder);
 
   const create = async () => {
     if (!name.trim()) return;
@@ -736,8 +959,15 @@ function CategoryPanel({ categories, selectedId, options, onSelect, onChanged, o
             key={category.id}
             selected={selectedId === category.id}
             onClick={() => onSelect(category.id)}
-            sx={{ pr: 0.5 }}
+            {...drag.itemProps(category.id, category.owned)}
+            sx={{ pr: 0.5, pl: 0.5, '&:hover .drag-handle': { opacity: 1 }, ...drag.itemSx(category.id) }}
           >
+            {/* 공유 카테고리는 순서를 바꿀 수 없다(늘 내 카테고리 뒤). 자리만 맞춘다. */}
+            <DragIndicatorIcon className="drag-handle" titleAccess={category.owned ? '끌어서 순서 바꾸기' : undefined}
+                               sx={{
+                                 fontSize: 15, mr: 0.25, color: 'text.disabled', opacity: 0.5,
+                                 cursor: 'grab', visibility: category.owned ? 'visible' : 'hidden',
+                               }} />
             <Box sx={{ flex: 1, minWidth: 0 }}>
               <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center' }}>
                 <Typography variant="body2" noWrap sx={{ fontWeight: 600 }}>{category.name}</Typography>

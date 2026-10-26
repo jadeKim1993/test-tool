@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+#
+# 테스트 도구 관리 명령 (install.sh 가 /usr/local/bin/testerctl 로 연결한다).
+#
+#   testerctl status            실행 상태와 접속 주소
+#   testerctl logs [api|web]    로그 따라 보기 (기본: 둘 다)
+#   sudo testerctl restart      재시작 (설정을 바꾼 뒤)
+#   sudo testerctl stop|start
+#   testerctl version
+#
+# systemd 가 있으면 서비스(tester-api, tester-web)를 다루고, 없으면 직접 프로세스를 띄운다.
+
+set -euo pipefail
+
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+HOME_DIR="$(cd "$(dirname "$SELF")/.." && pwd)"
+CONF="$HOME_DIR/conf/tester.conf"
+RUN_DIR="$HOME_DIR/run"
+LOG_DIR="$HOME_DIR/logs"
+
+die() { echo "오류: $*" >&2; exit 1; }
+
+load_conf() {
+	[ -r "$CONF" ] || die "$CONF 를 읽을 수 없습니다(권한이 없으면 sudo 로 실행)."
+	set -a
+	# shellcheck disable=SC1090
+	. "$CONF"
+	set +a
+	TESTER_WEB_PORT="${TESTER_WEB_PORT:-80}"
+	TESTER_API_PORT="${TESTER_API_PORT:-8080}"
+	TESTER_API_BIND="${TESTER_API_BIND:-127.0.0.1}"
+	JAVA_OPTS="${JAVA_OPTS:-}"
+}
+
+use_systemd() {
+	[ -d /run/systemd/system ] && [ -f /etc/systemd/system/tester-api.service ]
+}
+
+need_root() { [ "$(id -u)" -eq 0 ] || die "root 권한이 필요합니다: sudo testerctl $1"; }
+
+api_ok() {
+	"$HOME_DIR/jre/bin/java" -jar "$HOME_DIR/app/tester-api.jar" --healthcheck \
+		"http://127.0.0.1:$TESTER_API_PORT/actuator/health" >/dev/null 2>&1
+}
+web_ok() {
+	"$HOME_DIR/node/bin/node" -e \
+		"fetch('http://127.0.0.1:$TESTER_WEB_PORT/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+}
+
+address() {
+	local ip suffix=""
+	ip="$(hostname -I 2>/dev/null | awk '{print $1}')" || true
+	[ "$TESTER_WEB_PORT" != "80" ] && suffix=":$TESTER_WEB_PORT"
+	echo "http://${ip:-<서버IP>}$suffix"
+}
+
+# ---------------------------------------------------------------- systemd 없는 서버용
+RUN_USER="$(stat -c '%U' "$HOME_DIR/data" 2>/dev/null || id -un)"
+
+# 실제 프로세스가 자기 PID 를 적고 exec 한다 — 중간 셸(runuser 등)의 PID 를 적으면 stop 이 엉뚱한 걸 죽인다.
+# setsid 로 터미널에서 떼어 내 SSH 를 끊어도 같이 죽지 않게 한다.
+launch() {
+	local name="$1" log="$2"
+	shift 2
+	local script='echo $$ > "$0"; exec "$@"'
+	rm -f "$RUN_DIR/$name.pid"
+	if [ "$(id -u)" -eq 0 ] && [ "$RUN_USER" != "root" ]; then
+		runuser -u "$RUN_USER" -- setsid bash -c "$script" "$RUN_DIR/$name.pid" "$@" >> "$log" 2>&1 < /dev/null &
+	else
+		setsid bash -c "$script" "$RUN_DIR/$name.pid" "$@" >> "$log" 2>&1 < /dev/null &
+	fi
+	for _ in $(seq 1 20); do [ -s "$RUN_DIR/$name.pid" ] && return; sleep 0.1; done
+}
+
+pid_alive() { [ -s "$RUN_DIR/$1.pid" ] && kill -0 "$(cat "$RUN_DIR/$1.pid")" 2>/dev/null; }
+
+# PID 파일이 없어도(지워졌거나 손으로 띄운 경우) /proc 에서 이 설치의 프로세스를 찾는다.
+# ps 가 없는 최소 설치 서버도 있어서 cmdline 을 직접 읽는다. 감싸는 runuser/bash -c 는 뺀다.
+scan_pid() {
+	local pattern="$HOME_DIR/app/$1" dir cmd
+	for dir in /proc/[0-9]*; do
+		cmd="$(tr '\0' ' ' < "$dir/cmdline" 2>/dev/null)" || continue
+		case "$cmd" in *"$pattern"*) ;; *) continue ;; esac
+		case "$cmd" in *runuser*|*"bash -c"*|*--healthcheck*) continue ;; esac
+		echo "${dir#/proc/}"
+		return 0
+	done
+	return 1
+}
+
+# api|web → 실행 중인 PID (PID 파일 → 프로세스 검색 순). 없으면 실패.
+proc_pid() {
+	local file="tester-api.jar"
+	[ "$1" = "web" ] && file="web-server.mjs"
+	if pid_alive "$1"; then
+		cat "$RUN_DIR/$1.pid"
+		return 0
+	fi
+	scan_pid "$file"
+}
+
+direct_start() {
+	mkdir -p "$RUN_DIR" "$LOG_DIR"
+	cd "$HOME_DIR"
+	if ! proc_pid api >/dev/null; then
+		# shellcheck disable=SC2086
+		launch api "$LOG_DIR/api.log" "$HOME_DIR/jre/bin/java" $JAVA_OPTS -jar "$HOME_DIR/app/tester-api.jar" \
+			"--server.port=$TESTER_API_PORT" "--server.address=$TESTER_API_BIND"
+	fi
+	if ! proc_pid web >/dev/null; then
+		# 1024 미만 포트는 권한이 필요하다. systemd 는 AmbientCapabilities 로 해결하고, 여기서는 setcap 을 쓴다.
+		if [ "$TESTER_WEB_PORT" -lt 1024 ] && [ "$RUN_USER" != "root" ]; then
+			command -v setcap >/dev/null 2>&1 \
+				|| die "포트 $TESTER_WEB_PORT 을(를) 열려면 setcap 이 필요합니다. $CONF 의 TESTER_WEB_PORT 를 1024 이상으로 바꾸세요."
+			setcap 'cap_net_bind_service=+ep' "$HOME_DIR/node/bin/node"
+		fi
+		launch web "$LOG_DIR/web.log" env TESTER_WEB_ROOT="$HOME_DIR/web" "$HOME_DIR/node/bin/node" "$HOME_DIR/app/web-server.mjs"
+	fi
+}
+
+direct_stop() {
+	local name pid
+	for name in web api; do
+		pid="$(proc_pid "$name")" || { rm -f "$RUN_DIR/$name.pid"; continue; }
+		kill "$pid"
+		for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+		kill -9 "$pid" 2>/dev/null || true
+		rm -f "$RUN_DIR/$name.pid"
+	done
+}
+
+# ---------------------------------------------------------------- 명령
+cmd_status() {
+	load_conf
+	local api web
+	api_ok && api="정상" || api="응답 없음"
+	web_ok && web="정상" || web="응답 없음"
+	echo "테스트 도구 $(cat "$HOME_DIR/VERSION" 2>/dev/null || echo '?')  ($HOME_DIR)"
+	if use_systemd; then
+		echo "  백엔드  $api   (tester-api: $(systemctl is-active tester-api 2>/dev/null || true), 포트 $TESTER_API_PORT)"
+		echo "  화면    $web   (tester-web: $(systemctl is-active tester-web 2>/dev/null || true), 포트 $TESTER_WEB_PORT)"
+	else
+		local api_pid web_pid
+		api_pid="$(proc_pid api)" && api_pid="PID $api_pid" || api_pid="프로세스 없음"
+		web_pid="$(proc_pid web)" && web_pid="PID $web_pid" || web_pid="프로세스 없음"
+		echo "  백엔드  $api   ($api_pid, 포트 $TESTER_API_PORT)"
+		echo "  화면    $web   ($web_pid, 포트 $TESTER_WEB_PORT)"
+	fi
+	echo "  접속    $(address)"
+	[ "$api" = "정상" ] && [ "$web" = "정상" ]
+}
+
+cmd_start() {
+	need_root start
+	load_conf
+	if use_systemd; then
+		systemctl start tester-api tester-web
+	else
+		direct_start
+	fi
+	echo -n "시작하는 중 "
+	for _ in $(seq 1 120); do
+		if api_ok && web_ok; then
+			echo
+			echo "실행 중 — $(address)"
+			return
+		fi
+		echo -n "."
+		sleep 1
+	done
+	echo
+	die "120초 안에 응답하지 않았습니다. testerctl logs 로 확인하세요."
+}
+
+cmd_stop() {
+	need_root stop
+	if use_systemd; then
+		systemctl stop tester-web tester-api
+	else
+		direct_stop
+	fi
+	echo "정지했습니다."
+}
+
+cmd_logs() {
+	local which="${1:-all}"
+	if use_systemd; then
+		case "$which" in
+			api) exec journalctl -u tester-api -n 100 -f ;;
+			web) exec journalctl -u tester-web -n 100 -f ;;
+			*) exec journalctl -u tester-api -u tester-web -n 100 -f ;;
+		esac
+	fi
+	case "$which" in
+		api) exec tail -n 100 -F "$LOG_DIR/api.log" ;;
+		web) exec tail -n 100 -F "$LOG_DIR/web.log" ;;
+		*) exec tail -n 100 -F "$LOG_DIR/api.log" "$LOG_DIR/web.log" ;;
+	esac
+}
+
+case "${1:-}" in
+	status) cmd_status ;;
+	start) cmd_start ;;
+	stop) cmd_stop ;;
+	restart) cmd_stop; cmd_start ;;
+	logs) cmd_logs "${2:-all}" ;;
+	version) cat "$HOME_DIR/VERSION" ;;
+	*) sed -n '3,11p' "$SELF" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac

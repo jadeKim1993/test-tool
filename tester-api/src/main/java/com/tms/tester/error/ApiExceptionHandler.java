@@ -9,6 +9,9 @@ import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import com.tms.tester.common.ErrorCode;
 import com.tms.tester.common.TesterException;
@@ -52,6 +55,24 @@ public class ApiExceptionHandler {
 	@ExceptionHandler(IllegalArgumentException.class)
 	public ProblemDetail handleIllegalArgument(IllegalArgumentException e) {
 		return problem(HttpStatus.BAD_REQUEST, e.getMessage(), ErrorCode.INVALID.name());
+	}
+
+	/** 없는 경로. 아래의 Exception 처리로 떨어지면 500 + ERROR 로그가 되어 버린다. */
+	@ExceptionHandler(NoResourceFoundException.class)
+	public ProblemDetail handleNoResource(NoResourceFoundException e) {
+		return problem(HttpStatus.NOT_FOUND, "없는 경로입니다: /" + e.getResourcePath(), ErrorCode.NOT_FOUND.name());
+	}
+
+	/** 경로는 있지만 메서드가 다르다(예: PUT 만 받는 경로에 POST). 서버 오류가 아니다. */
+	@ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+	public ProblemDetail handleMethodNotSupported(HttpRequestMethodNotSupportedException e) {
+		return problem(HttpStatus.METHOD_NOT_ALLOWED, "지원하지 않는 요청 방식입니다: " + e.getMethod(), ErrorCode.INVALID.name());
+	}
+
+	/** 본문 JSON 을 읽을 수 없다(형식 오류·타입 불일치). 클라이언트 쪽 문제다. */
+	@ExceptionHandler(HttpMessageNotReadableException.class)
+	public ProblemDetail handleUnreadable(HttpMessageNotReadableException e) {
+		return problem(HttpStatus.BAD_REQUEST, "요청 본문을 읽을 수 없습니다(JSON 형식 확인)", ErrorCode.INVALID.name());
 	}
 
 	@ExceptionHandler(Exception.class)

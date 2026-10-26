@@ -24,13 +24,25 @@ public final class TemplateCompiler {
 	private static final Set<String> NAMED_ARG_KEYS = Set.of("step", "charset", "zone", "scale", "locale");
 
 	private final ValueWriterRegistry registry;
+	private final boolean strict;
 
 	public TemplateCompiler() {
 		this(ValueWriterRegistry.standard());
 	}
 
 	public TemplateCompiler(ValueWriterRegistry registry) {
+		this(registry, false);
+	}
+
+	/**
+	 * @param strict true 면 플레이스홀더 안의 중첩 {@code ${...}} 를 오류로 거부한다.
+	 *               파서는 중첩을 지원하지 않아 안쪽 {@code }} 에서 바깥을 닫아 버리고, 남은 글자는
+	 *               리터럴로 섞여 나간다(오류 없이). 저장·미리보기는 strict 로 막고, 엔진은 이미 저장된
+	 *               템플릿이 갑자기 기동에 실패하지 않도록 예전처럼 관대하게 둔다.
+	 */
+	public TemplateCompiler(ValueWriterRegistry registry, boolean strict) {
 		this.registry = registry;
+		this.strict = strict;
 	}
 
 	public ValueWriterRegistry registry() {
@@ -47,10 +59,14 @@ public final class TemplateCompiler {
 		}
 		Parser parser = new Parser(charset == null ? StandardCharsets.UTF_8 : charset);
 		if (format != null && !format.header().isEmpty()) {
+			parser.header = true;
 			parser.parse(format.header());
+			parser.header = false;
 		}
 		parser.parse(content);
-		return new CompiledTemplate(templateId, name, parser.segments.toArray(new ValueWriter[0]), parser.slots.size());
+		int[] origins = parser.origins.stream().mapToInt(Integer::intValue).toArray();
+		return new CompiledTemplate(templateId, name, parser.segments.toArray(new ValueWriter[0]), parser.slots.size(),
+				origins, List.copyOf(parser.placeholders));
 	}
 
 	/** 문법 검증만 수행한다. 오류가 있으면 예외를 던진다. */
@@ -62,8 +78,14 @@ public final class TemplateCompiler {
 
 		private final Charset charset;
 		private final List<ValueWriter> segments = new ArrayList<>();
+		/** segments 와 같은 길이. 각 조각의 출처(미리보기 강조용) — {@link CompiledTemplate#renderParts}. */
+		private final List<Integer> origins = new ArrayList<>();
+		private final List<CompiledTemplate.Placeholder> placeholders = new ArrayList<>();
 		private final Map<String, Integer> slots = new LinkedHashMap<>();
 		private final StringBuilder literal = new StringBuilder();
+		/** 포맷 헤더를 파싱하는 중이면 true. 헤더 조각은 본문 위치가 없다. */
+		private boolean header;
+		private String lastFunction;
 
 		private Parser(Charset charset) {
 			this.charset = charset;
@@ -85,12 +107,25 @@ public final class TemplateCompiler {
 					if (close < 0) {
 						throw new TemplateSyntaxException("닫히지 않은 플레이스홀더입니다", i);
 					}
+					int nested = content.indexOf("${", i + 2);
+					if (strict && nested >= 0 && nested < close) {
+						throw new TemplateSyntaxException("플레이스홀더 안에 ${...} 를 넣을 수 없습니다. "
+								+ "예: ${choice(-:80,admin:10,guest:10)} 처럼 값을 직접 나열하세요", i);
+					}
 					flushLiteral();
 					try {
 						segments.add(placeholder(content.substring(i + 2, close)));
 					}
 					catch (TemplateSyntaxException e) {
 						throw new TemplateSyntaxException(e.getMessage(), i);
+					}
+					if (header) {
+						origins.add(CompiledTemplate.ORIGIN_HEADER);
+					}
+					else {
+						origins.add(placeholders.size());
+						placeholders.add(new CompiledTemplate.Placeholder(i, close + 1,
+								content.substring(i, close + 1), lastFunction));
 					}
 					i = close + 1;
 					continue;
@@ -104,6 +139,7 @@ public final class TemplateCompiler {
 		private void flushLiteral() {
 			if (literal.length() > 0) {
 				segments.add(new StaticWriter(literal.toString().getBytes(charset)));
+				origins.add(header ? CompiledTemplate.ORIGIN_HEADER : CompiledTemplate.ORIGIN_LITERAL);
 				literal.setLength(0);
 			}
 		}
@@ -143,6 +179,7 @@ public final class TemplateCompiler {
 			if (function.isEmpty()) {
 				throw new TemplateSyntaxException("함수 이름이 없습니다", -1);
 			}
+			lastFunction = function.toLowerCase(java.util.Locale.ROOT);
 
 			ValueWriter writer;
 			if ("ref".equalsIgnoreCase(function)) {

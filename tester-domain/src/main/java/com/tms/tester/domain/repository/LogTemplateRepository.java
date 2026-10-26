@@ -13,4 +13,7 @@ public interface LogTemplateRepository extends JpaRepository<LogTemplate, Long> 
 	List<LogTemplate> findByCategoryIdAndEnabledTrueOrderBySortOrderAscIdAsc(Long categoryId);
 
 	long countByCategoryId(Long categoryId);
+
+	/** 켜져 있어 실제로 전송에 쓰이는 로그 종류 수. */
+	long countByCategoryIdAndEnabledTrue(Long categoryId);
 }

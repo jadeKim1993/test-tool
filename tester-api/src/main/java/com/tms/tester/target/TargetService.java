@@ -7,6 +7,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.tms.tester.common.Framing;
+import com.tms.tester.common.HttpFormat;
 import com.tms.tester.common.Protocol;
 import com.tms.tester.common.TesterException;
 import com.tms.tester.domain.entity.SendTarget;
@@ -109,7 +110,7 @@ public class TargetService {
 			long latency = (System.nanoTime() - started) / 1_000_000;
 			String message = Protocol.UDP.equalsIgnoreCase(target.getProtocol())
 					? "UDP 소켓 생성 성공 (UDP 는 비연결형이라 수신 여부까지는 확인할 수 없습니다)"
-					: "연결 성공";
+					: sender.connectMessage() != null ? sender.connectMessage() : "연결 성공";
 			return new TargetDtos.TestResult(true, latency, message);
 		}
 		catch (Exception e) {
@@ -128,7 +129,10 @@ public class TargetService {
 				target.getFraming(),
 				target.getBatchBytes(),
 				target.getSendBufferBytes(),
-				target.getConnectTimeoutMs());
+				target.getConnectTimeoutMs(),
+				target.getHttpPath(),
+				target.getHttpFormat(),
+				target.getHttpHeaders());
 	}
 
 	@Transactional(readOnly = true)
@@ -160,6 +164,20 @@ public class TargetService {
 		if (request.connectTimeoutMs() != null && request.connectTimeoutMs() > 0) {
 			target.setConnectTimeoutMs(request.connectTimeoutMs());
 		}
+		if (Protocol.isHttp(request.protocol())) {
+			HttpFormat format = request.httpFormat() == null ? HttpFormat.LINES : request.httpFormat();
+			String path = request.httpPath() == null || request.httpPath().isBlank()
+					? format.defaultPath() : request.httpPath().trim();
+			if (!path.startsWith("/")) {
+				path = "/" + path;
+			}
+			if (path.contains(" ")) {
+				throw TesterException.invalid("경로에 공백을 넣을 수 없습니다: " + path);
+			}
+			target.setHttpFormat(format);
+			target.setHttpPath(path);
+			target.setHttpHeaders(request.httpHeaders() == null ? "" : request.httpHeaders().strip());
+		}
 	}
 
 	private TargetDtos.TargetResponse toResponse(SendTarget target) {
@@ -167,6 +185,7 @@ public class TargetService {
 				target.getId(), target.getName(), target.getProtocol(), target.getHost(), target.getPort(),
 				target.getConnections(), target.getFraming(), target.getBatchBytes(),
 				target.getSendBufferBytes(), target.getConnectTimeoutMs(),
+				target.getHttpPath(), target.getHttpFormat(), target.getHttpHeaders(),
 				target.endpoint(), target.getUpdatedAt());
 	}
 }

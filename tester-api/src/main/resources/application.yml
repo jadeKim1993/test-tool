@@ -3,7 +3,9 @@ spring:
     name: tester
   datasource:
     # 파일 기반 H2. 애플리케이션을 재시작해도 템플릿/대상/작업 설정이 유지된다.
-    url: jdbc:h2:file:./data/tester;AUTO_SERVER=TRUE;DB_CLOSE_DELAY=-1
+    # AUTO_SERVER 는 서버 자신의 호스트명을 조회한다 — 호스트명이 DNS·/etc/hosts 에 없는 내부망 서버에서는
+    # 기동 자체가 실패하므로 오프라인 설치본은 TESTER_DB_URL 로 AUTO_SERVER 를 뺀 주소를 쓴다.
+    url: ${TESTER_DB_URL:jdbc:h2:file:./data/tester;AUTO_SERVER=TRUE;DB_CLOSE_DELAY=-1}
     username: sa
     password: ""
     driver-class-name: org.h2.Driver

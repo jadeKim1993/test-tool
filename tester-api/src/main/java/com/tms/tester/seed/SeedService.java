@@ -1,6 +1,5 @@
 package com.tms.tester.seed;
 
-import java.util.ArrayList;
 import java.util.List;
 
 import org.slf4j.Logger;
@@ -9,16 +8,15 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.tms.tester.common.LogFormat;
-import com.tms.tester.common.Protocol;
 import com.tms.tester.domain.entity.Category;
 import com.tms.tester.domain.entity.LogTemplate;
-import com.tms.tester.domain.entity.SendTarget;
 import com.tms.tester.domain.entity.User;
 import com.tms.tester.domain.repository.CategoryRepository;
-import com.tms.tester.domain.repository.SendTargetRepository;
 
 /**
- * 신규 사용자에게 바로 쓸 수 있는 카테고리/템플릿/대상을 넣어준다.
+ * 신규 사용자에게 바로 쓸 수 있는 카테고리/템플릿을 넣어준다.
+ * <p>전송 대상은 넣지 않는다. 예제 주소(사설 IP)는 실제로 받는 서버가 없어 목록만 어지럽혔고,
+ * 대상은 각자 환경의 수집 서버 주소라 미리 채워 줄 수 있는 값이 없다.
  * <p>빈 화면에서 시작하면 템플릿 문법부터 배워야 하므로, 실제 서비스 로그 형태를
  * 그대로 담은 예제를 제공해 "복사해서 고쳐 쓰는" 경로를 만든다.
  */
@@ -28,11 +26,9 @@ public class SeedService {
 	private static final Logger log = LoggerFactory.getLogger(SeedService.class);
 
 	private final CategoryRepository categoryRepository;
-	private final SendTargetRepository targetRepository;
 
-	public SeedService(CategoryRepository categoryRepository, SendTargetRepository targetRepository) {
+	public SeedService(CategoryRepository categoryRepository) {
 		this.categoryRepository = categoryRepository;
-		this.targetRepository = targetRepository;
 	}
 
 	@Transactional
@@ -43,29 +39,7 @@ public class SeedService {
 		categoryRepository.save(syslog(user));
 		categoryRepository.save(firewall(user));
 		categoryRepository.save(json(user));
-
-		for (String host : defaultTargetHosts()) {
-			targetRepository.save(new SendTarget(user, Protocol.UDP, host, SYSLOG_PORT));
-		}
 		log.info("신규 사용자 기본 데이터 생성: {}", user.getUsername());
-	}
-
-	/** 기본 전송 대상 포트. syslog 표준 포트라 수집 서버가 대개 여기로 받는다. */
-	private static final int SYSLOG_PORT = 514;
-
-	/**
-	 * 기본 전송 대상 호스트(예제). 실제 운영에서 마주칠 법한 사설 대역을 보여 주기 위한 값이라
-	 * 루프백이 아니다 — 로컬 {@code tools/log-sink} 로 시험하려면 대상을 직접 추가해야 한다.
-	 */
-	public static List<String> defaultTargetHosts() {
-		List<String> hosts = new ArrayList<>();
-		for (int last = 110; last <= 114; last++) {
-			hosts.add("192.168.70." + last);
-		}
-		for (int last = 140; last <= 145; last++) {
-			hosts.add("192.168.70." + last);
-		}
-		return hosts;
 	}
 
 	private Category tomcat(User user) {
@@ -92,8 +66,10 @@ public class SeedService {
 
 	private Category nginx(User user) {
 		Category category = new Category(user, "nginx", "nginx 액세스/에러 로그");
+		// 템플릿 파서는 함수 인자 안의 중첩 ${...} 를 지원하지 않는다. 예전엔
+		// ${choice(-:80,${dict(usernames)}:20)} 로 썼다가 모든 로그에 "-:20)}" 가 섞여 나갔다.
 		add(category, "access", 85,
-				"${ip as cip} - ${choice(-:80,${dict(usernames)}:20)} [${ts(dd/MMM/yyyy:HH:mm:ss Z,en)}] "
+				"${ip as cip} - ${choice(-:80,admin:4,jdoe:4,svc_batch:4,monitor:4,guest:4)} [${ts(dd/MMM/yyyy:HH:mm:ss Z,en)}] "
 						+ "\"${choice(GET:75,POST:20,HEAD:5)} ${dict(paths)} HTTP/1.1\" "
 						+ "${choice(200:88,301:3,404:6,502:3)} ${int(150,90000)} "
 						+ "\"${choice(-,https://portal.internal/)}\" \"${dict(user_agents)}\" ${float(0,2,3)}");

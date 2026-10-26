@@ -11,9 +11,14 @@ import com.tms.tester.domain.entity.Category;
 
 public interface CategoryRepository extends JpaRepository<Category, Long> {
 
-	/** 내 카테고리 + 공유 카테고리. */
-	@Query("select c from Category c where c.owner.id = :ownerId or c.shared = true order by c.name")
+	/** 내 카테고리(내가 정한 순서) + 그 뒤에 다른 사람의 공유 카테고리. */
+	@Query("select c from Category c where c.owner.id = :ownerId or c.shared = true "
+			+ "order by case when c.owner.id = :ownerId then 0 else 1 end, c.sortOrder, c.name")
 	List<Category> findVisible(@Param("ownerId") Long ownerId);
+
+	/** 새 카테고리를 맨 뒤에 두기 위한 현재 최댓값. 없으면 -1. */
+	@Query("select coalesce(max(c.sortOrder), -1) from Category c where c.owner.id = :ownerId")
+	int maxSortOrder(@Param("ownerId") Long ownerId);
 
 	Optional<Category> findByOwnerIdAndName(Long ownerId, String name);
 

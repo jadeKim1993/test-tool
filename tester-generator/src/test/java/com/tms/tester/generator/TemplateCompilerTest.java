@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
@@ -159,5 +160,44 @@ class TemplateCompilerTest {
 		finally {
 			buf.release();
 		}
+	}
+
+	@Test
+	void strict_모드는_중첩_플레이스홀더를_거부한다() {
+		TemplateCompiler strict = new TemplateCompiler(ValueWriterRegistry.standard(), true);
+		assertThatThrownBy(() -> strict.validate("user=${choice(-:80,${dict(usernames)}:20)} end"))
+				.isInstanceOf(TemplateSyntaxException.class)
+				.hasMessageContaining("넣을 수 없습니다")
+				.extracting(e -> ((TemplateSyntaxException) e).getPosition()).isEqualTo(5);
+	}
+
+	@Test
+	void 기본_모드는_이미_저장된_중첩_템플릿을_예전처럼_통과시킨다() {
+		// 엔진이 기존 템플릿 때문에 갑자기 기동에 실패하지 않아야 한다(잘못 렌더되는 건 그대로).
+		assertThat(render("${choice(a,${dict(usernames)}:20)}")).endsWith(":20)}");
+	}
+
+	@Test
+	void 조각별_렌더는_출처를_알려준다() {
+		CompiledTemplate template = compiler.compile("src=${ip as cip} n=${int(5,5)} again=${ref(cip)}");
+		assertThat(template.placeholders()).extracting(CompiledTemplate.Placeholder::function)
+				.containsExactly("ip", "int", "ref");
+		assertThat(template.placeholders().get(1).expression()).isEqualTo("${int(5,5)}");
+		assertThat(template.placeholders().get(1).start()).isEqualTo(19);
+
+		List<CompiledTemplate.Part> parts = template.renderParts(RenderContext.standalone());
+		assertThat(parts).extracting(CompiledTemplate.Part::source).containsExactly(-1, 0, -1, 1, -1, 2);
+		assertThat(parts.get(3).text()).isEqualTo("5");
+		assertThat(parts.get(5).text()).isEqualTo(parts.get(1).text());
+	}
+
+	@Test
+	void 포맷_헤더는_한_조각으로_합쳐진다() {
+		CompiledTemplate template = compiler.compile(1L, "t", LogFormat.SYSLOG_RFC5424,
+				StandardCharsets.UTF_8, "msg ${int(1,1)}");
+		List<CompiledTemplate.Part> parts = template.renderParts(RenderContext.standalone());
+		assertThat(parts).extracting(CompiledTemplate.Part::source).containsExactly(-2, -1, 0);
+		assertThat(parts.get(0).text()).startsWith("<");
+		assertThat(template.placeholders()).hasSize(1);
 	}
 }

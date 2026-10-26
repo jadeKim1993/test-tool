@@ -1,6 +1,5 @@
 import type {
-  Category, FunctionSpec, Job, JobRun, JobStatus, LogTemplate, MetaOptions,
-  PreviewResponse, ProtocolInfo, Target, TestResult, TokenResponse, User, WireEncoding,
+  Category, FunctionSpec, Job, JobContent, JobRun, JobStatus, LogTemplate, MetaOptions, PreviewResponse, ProtocolInfo, Target, TestResult, TokenResponse, User, WireEncoding,
 } from './types';
 
 const TOKEN_KEY = 'tester.token';
@@ -81,6 +80,8 @@ export const api = {
   updateCategory: (id: number, body: { name: string; description?: string; shared: boolean; encoding?: WireEncoding }) =>
     request<Category>(`/api/categories/${id}`, { method: 'PUT', body: json(body) }),
   deleteCategory: (id: number) => request<void>(`/api/categories/${id}`, { method: 'DELETE' }),
+  reorderCategories: (ids: number[]) =>
+    request<void>('/api/categories/order', { method: 'PUT', body: json({ ids }) }),
   duplicateCategory: (id: number, name?: string) =>
     request<Category>(`/api/categories/${id}/duplicate${name ? `?name=${encodeURIComponent(name)}` : ''}`,
       { method: 'POST' }),
@@ -96,6 +97,8 @@ export const api = {
   deleteTemplate: (id: number) => request<void>(`/api/templates/${id}`, { method: 'DELETE' }),
   preview: (content: string, format: string, count = 5) =>
     request<PreviewResponse>('/api/templates/preview', { method: 'POST', body: json({ content, format, count }) }),
+  reorderTemplates: (categoryId: number, ids: number[]) =>
+    request<void>(`/api/categories/${categoryId}/templates/order`, { method: 'PUT', body: json({ ids }) }),
   /** 카테고리 안의 로그 종류를 한 번에 켜고 끈다. */
   setAllTemplatesEnabled: (categoryId: number, enabled: boolean) =>
     request<{ changed: number; enabled: boolean }>(
@@ -121,6 +124,8 @@ export const api = {
     request<JobStatus>(`/api/jobs/${id}/rate`, { method: 'PATCH', body: json({ eps }) }),
   jobStatus: (id: number) => request<JobStatus | null>(`/api/jobs/${id}/status`),
   jobRuns: (id: number, limit = 20) => request<JobRun[]>(`/api/jobs/${id}/runs?limit=${limit}`),
+  /** 이 작업이 실제로 보내는 로그 종류·비율·예시. */
+  jobContent: (id: number) => request<JobContent>(`/api/jobs/${id}/content`),
   running: () => request<{ runningJobs: number; totalEps: number; totalMbps: number; jobIds: number[] }>('/api/jobs/running'),
 
   // ---- 메타 ----

@@ -39,6 +39,14 @@ final class TcpLogSender implements LogSender {
 
 	private static final Logger log = LoggerFactory.getLogger(TcpLogSender.class);
 
+	private static final int INITIAL_BACKOFF_MILLIS = 500;
+	/**
+	 * 재연결 간격 상한. 수신 서버가 다시 뜨면 이 시간 안에 이어서 보낸다.
+	 * 부하 시험 도구라 빨리 복구되는 쪽이 중요하고, 죽은 포트에 붙어 보는 비용은 거의 없어서
+	 * 길게 잡을 이유가 없다(예전 10초 → 3초).
+	 */
+	private static final int MAX_BACKOFF_MILLIS = 3_000;
+
 	private final TargetSpec spec;
 	private final NettyRuntime runtime;
 	private final boolean tls;
@@ -110,8 +118,14 @@ final class TcpLogSender implements LogSender {
 		for (int i = 0; i < connections.length; i++) {
 			connections[i] = new Connection(i);
 		}
-		// 첫 커넥션은 동기로 확인해 잘못된 대상을 즉시 사용자에게 알린다.
+		// 모든 커넥션을 먼저 띄운다. 실패한 커넥션은 각자 백그라운드에서 계속 다시 붙는다
+		// (keepsRetrying). 여기서 예외를 던져도 close() 하지 않는 한 재시도는 멈추지 않는다.
 		ChannelFuture first = connections[0].doConnect();
+		for (int i = 1; i < connections.length; i++) {
+			connections[i].doConnect();
+		}
+		// 첫 커넥션 결과만 동기로 확인해 호출자에게 알린다. 연결 테스트는 이 예외를 그대로 쓰고,
+		// 전송 작업(LoadGenerator)은 경고만 남기고 시작한다.
 		if (!first.await(spec.connectTimeoutMs() + 500L, TimeUnit.MILLISECONDS)) {
 			throw new java.net.ConnectException(spec.endpoint() + " 연결 시간 초과");
 		}
@@ -128,9 +142,11 @@ final class TcpLogSender implements LogSender {
 						spec.endpoint() + " TLS 핸드셰이크 실패: " + sslHandler.handshakeFuture().cause().getMessage());
 			}
 		}
-		for (int i = 1; i < connections.length; i++) {
-			connections[i].doConnect();
-		}
+	}
+
+	@Override
+	public boolean keepsRetrying() {
+		return true;
 	}
 
 	@Override
@@ -162,7 +178,8 @@ final class TcpLogSender implements LogSender {
 		if (allActive) {
 			return SenderState.CONNECTED;
 		}
-		return anyActive ? SenderState.RECONNECTING : SenderState.FAILED;
+		// 닫지 않은 한 끊긴 커넥션은 계속 다시 붙고 있다. 전부 끊겨도 "실패"가 아니라 재연결 중이다.
+		return SenderState.RECONNECTING;
 	}
 
 	@Override
@@ -189,7 +206,7 @@ final class TcpLogSender implements LogSender {
 	private final class Connection implements SendEndpoint {
 
 		private final int index;
-		private final AtomicInteger backoffMillis = new AtomicInteger(500);
+		private final AtomicInteger backoffMillis = new AtomicInteger(INITIAL_BACKOFF_MILLIS);
 		private volatile Channel channel;
 
 		private Connection(int index) {
@@ -202,11 +219,22 @@ final class TcpLogSender implements LogSender {
 				if (f.isSuccess()) {
 					Channel connected = future.channel();
 					channel = connected;
-					backoffMillis.set(500);
 					connected.closeFuture().addListener(cf -> {
 						channel = null;
 						scheduleReconnect();
 					});
+					if (tls) {
+						// TCP 는 붙었지만 TLS 가 실패하는 서버(예: 평문 포트)에 대해 500ms 마다
+						// 재접속을 반복하지 않도록, 백오프 초기화는 핸드셰이크가 끝난 뒤에 한다.
+						connected.pipeline().get(SslHandler.class).handshakeFuture().addListener(h -> {
+							if (h.isSuccess()) {
+								markConnected();
+							}
+						});
+					}
+					else {
+						markConnected();
+					}
 				}
 				else {
 					lastError = future.cause() == null ? "연결 실패" : future.cause().getMessage();
@@ -216,12 +244,18 @@ final class TcpLogSender implements LogSender {
 			return future;
 		}
 
+		/** 다시 붙었다. 끊겼을 때의 오류 메시지가 화면에 계속 남지 않도록 지운다. */
+		private void markConnected() {
+			backoffMillis.set(INITIAL_BACKOFF_MILLIS);
+			lastError = null;
+		}
+
 		private void scheduleReconnect() {
 			if (closed) {
 				return;
 			}
 			int delay = backoffMillis.get();
-			backoffMillis.set(Math.min(delay * 2, 10_000));
+			backoffMillis.set(Math.min(delay * 2, MAX_BACKOFF_MILLIS));
 			log.debug("TCP 재연결 예약: {} #{} ({}ms 후)", spec.endpoint(), index, delay);
 			runtime.group().schedule(() -> {
 				if (!closed && channel == null) {

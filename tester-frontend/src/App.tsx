@@ -19,6 +19,7 @@ import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 
 import DarkModeIcon from '@mui/icons-material/DarkModeOutlined';
+import KeyboardIcon from '@mui/icons-material/KeyboardOutlined';
 import GraphicEqIcon from '@mui/icons-material/GraphicEq';
 import LightModeIcon from '@mui/icons-material/LightModeOutlined';
 import LogoutIcon from '@mui/icons-material/Logout';
@@ -27,13 +28,16 @@ import WifiOffIcon from '@mui/icons-material/WifiOff';
 
 import { api, getToken, setToken, setUnauthorizedHandler } from './api/client';
 import type { User } from './api/types';
+import { useHotkey } from './hooks/useHotkey';
 import { useMetricsStream } from './hooks/useMetricsStream';
+import { ShortcutHelp } from './components/ShortcutHelp';
 import { PulseDot, fmt } from './components/common';
 import { useColorMode } from './theme';
 import Login from './pages/Login';
 import SendConsole from './pages/SendConsole';
 import Templates from './pages/Templates';
 import Targets from './pages/Targets';
+import License from './pages/License';
 
 interface AuthContextValue {
   user: User | null;
@@ -54,6 +58,7 @@ const NAV = [
   { path: '/send', label: '전송 콘솔' },
   { path: '/templates', label: '템플릿' },
   { path: '/targets', label: '전송 대상' },
+  { path: '/license', label: '라이센스' },
 ];
 
 export default function App() {
@@ -117,6 +122,14 @@ export default function App() {
 
 function Shell() {
   const location = useLocation();
+  const navigate = useNavigate();
+  const [helpOpen, setHelpOpen] = useState(false);
+  // 메뉴 순서대로 1·2·3·4. 입력 중·대화상자 열림일 때는 useHotkey 가 무시한다.
+  useHotkey('1', () => navigate(NAV[0].path));
+  useHotkey('2', () => navigate(NAV[1].path));
+  useHotkey('3', () => navigate(NAV[2].path));
+  useHotkey('4', () => navigate(NAV[3].path));
+  useHotkey('?', () => setHelpOpen(true));
   const current = NAV.find((item) => location.pathname.startsWith(item.path))?.path ?? '/send';
 
   return (
@@ -141,6 +154,11 @@ function Shell() {
 
           <Box sx={{ flex: 1 }} />
           <LiveStatus />
+          <Tooltip title="단축키 (?)">
+            <IconButton size="small" aria-label="단축키" onClick={() => setHelpOpen(true)}>
+              <KeyboardIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
           <UserMenu />
         </Toolbar>
       </AppBar>
@@ -150,9 +168,11 @@ function Shell() {
           <Route path="/send" element={<SendConsole />} />
           <Route path="/templates" element={<Templates />} />
           <Route path="/targets" element={<Targets />} />
+          <Route path="/license" element={<License />} />
           <Route path="*" element={<Navigate to="/send" replace />} />
         </Routes>
       </Box>
+      {helpOpen && <ShortcutHelp onClose={() => setHelpOpen(false)} />}
     </Box>
   );
 }

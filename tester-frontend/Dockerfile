@@ -13,7 +13,7 @@
 #     -t 192.168.70.114:5000/tester-frontend:latest tester-frontend/
 #
 # nginx.conf 는 백엔드를 docker-compose 서비스명(backend:8080)으로 프록시한다.
-# 컨테이너 없이 배포할 때는 이 이미지 대신 deploy/nginx.conf + frontend.zip 을 쓴다.
+# 컨테이너 없이 배포할 때는 오프라인 설치본(./gradlew offlineBundle, README §내부망 오프라인 설치)을 쓴다.
 
 ARG NGINX_IMAGE=nginx:1.27-alpine
 FROM ${NGINX_IMAGE}

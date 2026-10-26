@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -93,7 +93,25 @@ export function Metric({ label, value, unit, tone, title }: {
   );
 }
 
-export function ErrorAlert({ error, onClose }: { error: string | null; onClose?: () => void }) {
+/** 알림을 잠깐 띄웠다가 치우는 기본 시간. 토스트(Snackbar)와 같은 3초. */
+export const NOTICE_MS = 3000;
+
+/**
+ * 오류 배너. autoHideMs 를 주면 그 시간 뒤에 onClose 를 불러 스스로 사라진다
+ * (전송 콘솔처럼 동작 결과를 잠깐 알리는 화면용 — 새로고침해야 지워지던 문제).
+ */
+export function ErrorAlert({ error, onClose, autoHideMs }: {
+  error: string | null;
+  onClose?: () => void;
+  autoHideMs?: number;
+}) {
+  useEffect(() => {
+    if (!error || !autoHideMs || !onClose) return;
+    const timer = window.setTimeout(onClose, autoHideMs);
+    return () => window.clearTimeout(timer);
+    // onClose 는 매 렌더 새로 만들어지는 경우가 많다. 같은 오류가 떠 있는 동안 타이머를 다시 걸지 않는다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [error, autoHideMs]);
   if (!error) return null;
   return (
     <Alert severity="error" onClose={onClose} sx={{ mb: 2 }}>
@@ -128,6 +146,21 @@ export function EmptyState({ icon, title, hint, action }: {
   );
 }
 
+/**
+ * key 가 새 값이 될 때마다 ms 동안만 true. 상태 변화를 "알림"으로 잠깐 띄우고 치우는 데 쓴다.
+ * key 가 null 이 됐다가 같은 값으로 돌아와도(예: 재연결이 다시 시작) 다시 보인다.
+ */
+export function useTransient(key: string | null, ms = NOTICE_MS): boolean {
+  const [shown, setShown] = useState<string | null>(null);
+  useEffect(() => {
+    setShown(key);
+    if (key === null) return;
+    const timer = window.setTimeout(() => setShown((current) => (current === key ? null : current)), ms);
+    return () => window.clearTimeout(timer);
+  }, [key, ms]);
+  return key !== null && shown === key;
+}
+
 /** 저장/시작 같은 동작의 결과를 방해 없이 알린다. */
 export function useToast() {
   const [message, setMessage] = useState<{ text: string; tone: 'success' | 'error' } | null>(null);
@@ -140,7 +173,7 @@ export function useToast() {
   const element = (
     <Snackbar
       open={message !== null}
-      autoHideDuration={3000}
+      autoHideDuration={NOTICE_MS}
       onClose={() => setMessage(null)}
       anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
     >

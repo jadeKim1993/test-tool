@@ -101,6 +101,12 @@ public class JobController {
 		return jobService.runs(user.id(), id, Math.min(Math.max(limit, 1), 100));
 	}
 
+	/** 이 작업이 실제로 보내는 로그 종류·비율·예시. 전송 콘솔 카드가 쓴다. */
+	@GetMapping("/{id}/content")
+	public JobDtos.JobContent content(@AuthenticationPrincipal AuthUser user, @PathVariable Long id) {
+		return jobService.content(user.id(), id);
+	}
+
 	/** 대시보드용 요약. 실행 중 작업 전체의 합계를 준다. */
 	@GetMapping("/running")
 	public JobDtos.RunningSummary running(@AuthenticationPrincipal AuthUser user) {

@@ -19,7 +19,9 @@ public final class TransportRegistry {
 		return new TransportRegistry()
 				.register(new TcpTransportFactory())
 				.register(new UdpTransportFactory())
-				.register(new TlsTransportFactory());
+				.register(new TlsTransportFactory())
+				.register(new HttpTransportFactory())
+				.register(new HttpsTransportFactory());
 	}
 
 	public TransportRegistry register(TransportFactory factory) {

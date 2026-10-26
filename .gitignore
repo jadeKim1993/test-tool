@@ -40,6 +40,8 @@ out/
 node_modules/
 dist/
 data/
+# 오프라인 설치본에 넣을 JRE·Node 다운로드 캐시(./gradlew offlineBundle)
+.runtime-cache/
 
 ### Docker ###
 # TESTER_JWT_SECRET 등 비밀값이 들어간다. .env.example 은 템플릿이라 커밋한다.

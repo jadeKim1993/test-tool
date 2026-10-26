@@ -150,3 +150,146 @@ tasks.register('perf') {
 project(':tester-transport').tasks.named('perfTest') {
 	mustRunAfter project(':tester-generator').tasks.named('perfTest')
 }
+
+// ---------------------------------------------------------------------------
+// 오프라인 설치본 (인터넷·Docker 가 없는 내부망 리눅스 서버용)
+//
+//   ./gradlew offlineBundle          # 인터넷이 되는 빌드 PC 에서 실행
+//   → build/distributions/tester-offline-<버전>-linux-x64.tar.gz
+//
+// 설치본에 Java(Temurin JRE)·Node.js(npm 포함)·백엔드 jar·화면 파일·화면 서버(web-server.mjs)를
+// 모두 넣는다. 서버에서는 압축을 풀고 sudo ./install.sh 한 번이면 끝난다(deploy/offline/README.txt).
+// 인터넷망은 지금처럼 Docker(docker-compose.yml)로 배포한다.
+//
+// JRE·Node 는 처음 한 번 받아 .runtime-cache/ 에 둔다(clean 해도 남는다). 빌드 PC 도 인터넷이 안 되면
+//   -PjreUrl=  / -PnodeUrl=  로 내부 미러를 가리키거나({version} {os} {arch} 치환, 로컬 파일 경로 가능)
+//   인터넷망에서 받은 파일을 .runtime-cache/ 에 같은 이름으로 넣어 둔다.
+// 버전은 재현성을 위해 고정한다: -PjreVersion=jdk-21.0.13+9  -PnodeVersion=24.22.1
+// ARM 서버용은 -PbundleArch=aarch64.
+// ---------------------------------------------------------------------------
+def bundleArch = providers.gradleProperty('bundleArch').getOrElse('x64')
+def jreVersion = providers.gradleProperty('jreVersion').getOrElse('jdk-21.0.13+9')
+def nodeVersion = providers.gradleProperty('nodeVersion').getOrElse('24.22.1')
+def jreUrlTemplate = (System.getenv('TESTER_JRE_URL') ?: providers.gradleProperty('jreUrl').getOrElse('')).toString().trim()
+def nodeUrlTemplate = (System.getenv('TESTER_NODE_URL') ?: providers.gradleProperty('nodeUrl').getOrElse('')).toString().trim()
+
+def bundleName = "tester-offline-${version}-linux-${bundleArch}"
+def bundleStageRoot = layout.buildDirectory.dir('offline')
+def bundleStageDir = layout.buildDirectory.dir("offline/${bundleName}")
+// build/ 밖에 둔다 — Gradle 은 build/ 안에서 자기가 만들지 않은 파일을 처음 실행 때 지워 버린다(직접 넣은 캐시가 사라짐).
+def runtimeCache = providers.provider { layout.projectDirectory.dir('.runtime-cache') }
+def jreArchive = runtimeCache.map { it.file("temurin-${jreVersion.replace('+', '_')}-linux-${bundleArch}.tar.gz") }
+// Node 는 아키텍처 이름이 다르다(aarch64 → arm64).
+def nodeArch = bundleArch == 'aarch64' ? 'arm64' : bundleArch
+def nodeArchive = runtimeCache.map { it.file("node-v${nodeVersion}-linux-${nodeArch}.tar.gz") }
+def isMacBuildHost = org.gradle.internal.os.OperatingSystem.current().isMacOsX()
+
+/** url(http/https/file/로컬 경로)을 target 으로 받는다. 이미 있으면 건너뛴다. */
+def fetchRuntime = { String label, String url, File target ->
+	if (target.length() > 0) {
+		logger.lifecycle("[offline] ${label} 캐시 사용: ${target.name}")
+		return
+	}
+	target.parentFile.mkdirs()
+	def partial = new File(target.path + '.part')
+	logger.lifecycle("[offline] ${label} 받는 중: ${url}")
+	if (!url.contains('://') || url.startsWith('file:')) {
+		def source = url.startsWith('file:') ? new File(URI.create(url)) : file(url)
+		java.nio.file.Files.copy(source.toPath(), partial.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+	}
+	else {
+		def client = java.net.http.HttpClient.newBuilder()
+				.followRedirects(java.net.http.HttpClient.Redirect.NORMAL)
+				.connectTimeout(java.time.Duration.ofSeconds(20))
+				.build()
+		def response = client.send(java.net.http.HttpRequest.newBuilder(URI.create(url)).GET().build(),
+				java.net.http.HttpResponse.BodyHandlers.ofFile(partial.toPath()))
+		if (response.statusCode() != 200) {
+			partial.delete()
+			throw new GradleException("${label} 다운로드 실패 (HTTP ${response.statusCode()}): ${url}\n" +
+					"인터넷이 안 되면 -PjreUrl / -PnodeUrl 로 내부 미러를 지정하거나, 받은 파일을 ${target} 에 넣으세요.")
+		}
+	}
+	partial.renameTo(target)
+}
+
+tasks.register('downloadJre') {
+	description = '설치본에 넣을 Temurin JRE 를 받는다(캐시에 있으면 건너뜀)'
+	group = 'distribution'
+	outputs.file(jreArchive)
+	doLast {
+		def url = jreUrlTemplate
+				? jreUrlTemplate.replace('{version}', jreVersion).replace('{os}', 'linux').replace('{arch}', bundleArch)
+				: "https://api.adoptium.net/v3/binary/version/${URLEncoder.encode(jreVersion, 'UTF-8')}/linux/${bundleArch}/jre/hotspot/normal/eclipse"
+		fetchRuntime('JRE', url, jreArchive.get().asFile)
+	}
+}
+
+tasks.register('downloadNode') {
+	description = '설치본에 넣을 Node.js(npm 포함)를 받는다(캐시에 있으면 건너뜀)'
+	group = 'distribution'
+	outputs.file(nodeArchive)
+	doLast {
+		def url = nodeUrlTemplate
+				? nodeUrlTemplate.replace('{version}', nodeVersion).replace('{os}', 'linux').replace('{arch}', nodeArch)
+				: "https://nodejs.org/dist/v${nodeVersion}/node-v${nodeVersion}-linux-${nodeArch}.tar.gz"
+		fetchRuntime('Node.js', url, nodeArchive.get().asFile)
+	}
+}
+
+tasks.register('writeBundleInfo') {
+	description = '설치본 메타데이터(install.sh 가 읽는다)'
+	group = 'distribution'
+	def info = layout.buildDirectory.file('offline-meta/bundle.info')
+	outputs.file(info)
+	inputs.property('values', "${version}|${bundleArch}|${jreVersion}|${nodeVersion}")
+	doLast {
+		info.get().asFile.text = """\
+				BUNDLE_VERSION="${version}"
+				BUNDLE_ARCH="${bundleArch}"
+				BUNDLE_JRE="${jreVersion}"
+				BUNDLE_NODE="v${nodeVersion}"
+				""".stripIndent()
+	}
+}
+
+tasks.register('stageOfflineBundle', Sync) {
+	description = '오프라인 설치본 디렉터리 구성'
+	group = 'distribution'
+	into bundleStageDir
+	from('deploy/offline/install.sh') { filePermissions { unix('rwxr-xr-x') } }
+	from('deploy/offline/README.txt')
+	from(tasks.named('writeBundleInfo'))
+	into('files') {
+		// 런타임은 압축 그대로 넣고 서버에서 시스템 tar 로 푼다 — JRE 의 심볼릭 링크가 보존된다.
+		from(tasks.named('downloadJre')) { rename { 'jre.tar.gz' } }
+		from(tasks.named('downloadNode')) { rename { 'node.tar.gz' } }
+		from(project(':tester-api').tasks.named('bootJar'))
+		from('deploy/offline/web-server.mjs')
+		from('deploy/offline/testerctl') { filePermissions { unix('rwxr-xr-x') } }
+		from(project(':tester-frontend').tasks.named('npmBuild')) { into 'web' }
+	}
+}
+
+tasks.register('offlineBundle', Exec) {
+	description = '오프라인 원클릭 설치본(tar.gz) 생성 — 내부망 서버에서 sudo ./install.sh'
+	group = 'distribution'
+	dependsOn 'stageOfflineBundle'
+	def archive = layout.buildDirectory.file("distributions/${bundleName}.tar.gz")
+	doFirst { archive.get().asFile.parentFile.mkdirs() }
+	// 소유자를 root(0) 로 고정하고, macOS 에서 만들면 ._ 파일·확장 속성을 뺀다(리눅스 tar 경고 방지).
+	def args = ['tar', '-czf', archive.get().asFile.path]
+	if (isMacBuildHost) {
+		args += ['--uid', '0', '--gid', '0', '--no-mac-metadata', '--no-xattrs']
+		environment 'COPYFILE_DISABLE', '1'
+	}
+	else {
+		args += ['--owner=0', '--group=0', '--numeric-owner']
+	}
+	args += ['-C', bundleStageRoot.get().asFile.path, bundleName]
+	commandLine args
+	doLast {
+		def file = archive.get().asFile
+		logger.lifecycle("[offline] ${file} (${String.format('%.1f', file.length() / 1e6)} MB)")
+	}
+}

@@ -57,6 +57,13 @@ public class Category extends BaseEntity {
 	@Column(nullable = false, length = 20, columnDefinition = "varchar(20) default 'UTF_8'")
 	private WireEncoding encoding = WireEncoding.UTF_8;
 
+	/**
+	 * 화면에 보이는 순서(템플릿 화면에서 끌어서 바꾼다). 같으면 이름순이라, 한 번도 옮기지 않은 기존
+	 * 카테고리는 예전처럼 이름순으로 보인다. NOT NULL 컬럼 추가라 기본값을 컬럼 정의에 둔다(encoding 과 같은 이유).
+	 */
+	@Column(name = "sort_order", nullable = false, columnDefinition = "int default 0")
+	private int sortOrder;
+
 	@OneToMany(mappedBy = "category", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
 	@OrderBy("sortOrder ASC, id ASC")
 	private List<LogTemplate> templates = new ArrayList<>();
@@ -78,6 +85,14 @@ public class Category extends BaseEntity {
 	public void removeTemplate(LogTemplate template) {
 		templates.remove(template);
 		template.setCategory(null);
+	}
+
+	public int getSortOrder() {
+		return sortOrder;
+	}
+
+	public void setSortOrder(int sortOrder) {
+		this.sortOrder = sortOrder;
 	}
 
 	public WireEncoding getEncoding() {

@@ -112,6 +112,23 @@ public class CatalogController {
 		return ResponseEntity.noContent().build();
 	}
 
+	/** 내 카테고리 순서 저장(템플릿 화면에서 끌어서 바꾼 결과). */
+	@PutMapping("/categories/order")
+	public ResponseEntity<Void> reorderCategories(
+			@AuthenticationPrincipal AuthUser user, @Valid @RequestBody CatalogDtos.OrderRequest request) {
+		categoryService.reorder(user.id(), request.ids());
+		return ResponseEntity.noContent().build();
+	}
+
+	/** 카테고리 안 로그 종류 순서 저장. */
+	@PutMapping("/categories/{id}/templates/order")
+	public ResponseEntity<Void> reorderTemplates(
+			@AuthenticationPrincipal AuthUser user, @PathVariable Long id,
+			@Valid @RequestBody CatalogDtos.OrderRequest request) {
+		templateService.reorder(user.id(), id, request.ids());
+		return ResponseEntity.noContent().build();
+	}
+
 	/** 카테고리 안의 로그 종류를 한 번에 켜거나 끈다. */
 	@PatchMapping("/categories/{id}/templates/enabled")
 	public Map<String, Object> setAllEnabled(

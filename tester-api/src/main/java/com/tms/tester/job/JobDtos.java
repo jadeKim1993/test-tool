@@ -4,9 +4,11 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Set;
 
+import com.tms.tester.common.LogFormat;
 import com.tms.tester.common.OverflowPolicy;
 import com.tms.tester.common.RunState;
 import com.tms.tester.common.SelectionStrategy;
+import com.tms.tester.common.WireEncoding;
 
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -86,5 +88,31 @@ public final class JobDtos {
 	}
 
 	public record RunningSummary(int runningJobs, double totalEps, double totalMbps, List<Long> jobIds) {
+	}
+
+	/**
+	 * 이 작업이 실제로 보내는 로그 종류. 엔진이 쓰는 목록과 같은 규칙으로 만든다
+	 * (카테고리의 사용 중인 종류 ∩ 작업이 고른 종류).
+	 *
+	 * @param selection 선택 방식. 가중치는 WEIGHTED_RANDOM 일 때만 비율에 반영된다
+	 * @param encoding  회선에 실을 때의 변환 방식(카테고리 설정)
+	 */
+	public record JobContent(SelectionStrategy selection, WireEncoding encoding, List<JobTemplate> templates) {
+	}
+
+	/**
+	 * @param share       실제 전송 비율(0~1). 라운드로빈/순차는 가중치와 무관하게 균등하다
+	 * @param sample      한 번 렌더링한 예시(인코딩 전 문자열). 문법 오류면 null
+	 * @param sampleBytes 예시 한 건의 UTF-8 바이트 수
+	 */
+	public record JobTemplate(
+			Long id,
+			String name,
+			LogFormat format,
+			int weight,
+			double share,
+			String sample,
+			int sampleBytes,
+			String error) {
 	}
 }
