@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import Alert from '@mui/material/Alert';
 import Autocomplete from '@mui/material/Autocomplete';
 import Box from '@mui/material/Box';
@@ -61,6 +61,22 @@ import { MONO } from '../theme';
  * 상단에는 전체 합계와 "새 작업" 만 남긴다.
  */
 const VIEW_KEY = 'tester.consoleView';
+/** 카드 폭(카드 오른쪽 끝을 끌어 조정). 격자는 이 폭을 최소로 해서 한 줄에 들어갈 만큼 놓는다. */
+const CARD_WIDTH_KEY = 'tester.cardWidth';
+const DEFAULT_CARD_WIDTH = 520;
+const MIN_CARD_WIDTH = 380;
+/** 카드 사이 간격(theme spacing 2). 한 줄에 몇 개 들어가는지 계산할 때 쓴다. */
+const CARD_GAP = 16;
+
+function loadCardWidth(): number {
+  try {
+    const value = Number(localStorage.getItem(CARD_WIDTH_KEY));
+    return value >= MIN_CARD_WIDTH ? value : DEFAULT_CARD_WIDTH;
+  } catch {
+    return DEFAULT_CARD_WIDTH;
+  }
+}
+
 /** 접어 둔 작업 카드 id 목록. 작업이 많을 때 지켜볼 것만 펼쳐 두도록 브라우저에 기억한다. */
 const COLLAPSED_KEY = 'tester.collapsedJobs';
 
@@ -92,6 +108,51 @@ export default function SendConsole() {
   const [stateFilter, setStateFilter] = useState<'all' | 'running' | 'stopped'>('all');
   const [sortBy, setSortBy] = useState<'name' | 'eps' | 'dropped'>('name');
   const [collapsed, setCollapsed] = useState<Set<number>>(loadCollapsed);
+  const [cardWidth, setCardWidth] = useState(loadCardWidth);
+  const [resizing, setResizing] = useState<{ width: number; columns: number } | null>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
+
+  const saveCardWidth = (width: number) => {
+    setCardWidth(width);
+    try { localStorage.setItem(CARD_WIDTH_KEY, String(width)); } catch { /* 기억 못 해도 동작에는 지장 없다 */ }
+  };
+
+  /**
+   * 카드 오른쪽 끝을 끌어 폭을 바꾼다. 모든 카드가 같은 폭을 쓴다(격자가 들쭉날쭉해지지 않게).
+   * 격자는 남는 폭을 카드에 나눠 주므로, 끄는 동안 "한 줄에 몇 개"가 바뀌는 지점에서 카드가 다시 펴진다.
+   */
+  const startResize = (event: ReactPointerEvent<HTMLElement>) => {
+    const handle = event.currentTarget;
+    const card = handle.parentElement;
+    if (!card) return;
+    event.preventDefault();
+    handle.setPointerCapture(event.pointerId);
+    const startX = event.clientX;
+    const startWidth = card.getBoundingClientRect().width;
+    const gridWidth = gridRef.current?.clientWidth ?? window.innerWidth;
+    const columnsFor = (w: number) => Math.max(1, Math.floor((gridWidth + CARD_GAP) / (w + CARD_GAP)));
+    let width = cardWidth;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const onMove = (e: PointerEvent) => {
+      width = Math.round(Math.min(gridWidth, Math.max(MIN_CARD_WIDTH, startWidth + e.clientX - startX)));
+      setCardWidth(width);
+      setResizing({ width, columns: columnsFor(width) });
+    };
+    const onUp = () => {
+      handle.removeEventListener('pointermove', onMove);
+      handle.removeEventListener('pointerup', onUp);
+      handle.removeEventListener('pointercancel', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      setResizing(null);
+      saveCardWidth(width);
+    };
+    handle.addEventListener('pointermove', onMove);
+    handle.addEventListener('pointerup', onUp);
+    handle.addEventListener('pointercancel', onUp);
+  };
 
   const saveCollapsed = (next: Set<number>) => {
     setCollapsed(next);
@@ -307,13 +368,19 @@ export default function SendConsole() {
                   onStart={(job) => start(job)} onStop={stop} onEdit={(job) => setEditing(job)} onDelete={remove} />
       )}
 
-      <Box sx={{
+      {/* 끄는 동안 지금 폭과 한 줄 개수를 보여 준다 */}
+      {resizing && (
+        <Chip color="primary" label={`카드 폭 ${resizing.width}px · 한 줄에 ${resizing.columns}개`}
+              sx={{ position: 'fixed', top: 64, left: '50%', transform: 'translateX(-50%)', zIndex: 1300, boxShadow: 4 }} />
+      )}
+
+      <Box ref={gridRef} sx={{
         display: view === 'card' ? 'grid' : 'none',
         gap: 2,
         // 접은 카드가 옆 카드 높이에 맞춰 늘어나지 않도록 각자 내용 높이만큼만.
         alignItems: 'start',
-        // 화면 폭이 아니라 실제로 쓸 수 있는 폭에 맞춰 접힌다. 카드가 좁아지면 한 줄로 떨어진다.
-        gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 520px), 1fr))',
+        // 카드 폭은 사용자가 끌어서 정한다(cardWidth). 화면이 그보다 좁으면 한 줄에 하나.
+        gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${cardWidth}px), 1fr))`,
       }}>
         {view === 'card' && visibleJobs.map((job) => (
           <JobCard
@@ -325,6 +392,8 @@ export default function SendConsole() {
             running={runningIds.has(job.id)}
             collapsed={collapsed.has(job.id)}
             onToggleCollapse={() => toggleCollapsed(job.id)}
+            onResizeStart={startResize}
+            onResizeReset={() => saveCardWidth(DEFAULT_CARD_WIDTH)}
             onStart={(eps) => start(job, eps)}
             onStop={() => stop(job)}
             onEdit={() => setEditing(job)}
@@ -358,7 +427,8 @@ export default function SendConsole() {
 }
 
 function JobCard({
-  job, target, options, status, running, collapsed, onToggleCollapse, onStart, onStop, onEdit, onDelete, onRate,
+  job, target, options, status, running, collapsed, onToggleCollapse, onResizeStart, onResizeReset,
+  onStart, onStop, onEdit, onDelete, onRate,
 }: {
   job: Job;
   target?: Target;
@@ -368,6 +438,9 @@ function JobCard({
   /** 접으면 머리 한 줄(상태·경로·현재 EPS·버튼)만 남긴다. */
   collapsed: boolean;
   onToggleCollapse: () => void;
+  /** 카드 오른쪽 끝 손잡이를 잡았을 때(폭 조정 시작). 더블클릭은 기본 폭으로. */
+  onResizeStart: (event: ReactPointerEvent<HTMLElement>) => void;
+  onResizeReset: () => void;
   /** 카드에 입력된 "시작 속도"로 시작한다. 작업 설정을 고치러 들어갈 필요가 없다. */
   onStart: (eps: number) => void;
   onStop: () => void;
@@ -434,7 +507,16 @@ function JobCard({
       : running ? 'success.main' : 'divider';
 
   return (
-    <Card sx={{ borderLeft: 3, borderLeftColor: accent, display: 'flex', flexDirection: 'column' }}>
+    <Card sx={{ borderLeft: 3, borderLeftColor: accent, display: 'flex', flexDirection: 'column', position: 'relative' }}>
+      {/* 폭 조정 손잡이: 카드 오른쪽 끝. 마우스를 올리면 ↔ 커서와 선이 보인다. */}
+      <Box onPointerDown={onResizeStart} onDoubleClick={onResizeReset}
+           title="끌어서 카드 폭 조정 · 더블클릭하면 기본 폭"
+           aria-label="카드 폭 조정"
+           sx={{
+             position: 'absolute', top: 0, right: 0, bottom: 0, width: 8, zIndex: 2, cursor: 'col-resize',
+             touchAction: 'none',
+             '&:hover, &:active': { bgcolor: 'primary.main', opacity: 0.35 },
+           }} />
       <Box sx={{ px: 2, pt: 1.5, pb: collapsed ? 1.5 : 0 }}>
         <Stack direction="row" spacing={1} sx={{ alignItems: 'flex-start', justifyContent: 'space-between' }}>
           {/* 작업 이름은 "카테고리 → 주소"로 자동으로 붙으므로 따로 쓰지 않고, 그 내용을 첫 줄에 바로 보여 준다. */}

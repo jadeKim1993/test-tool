@@ -78,12 +78,13 @@ export function JobRoute({ job, target, running, options }: {
           <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center', minWidth: 0 }} title={detail}>
             <Chip label={target.protocol} color={PROTOCOL_COLOR[target.protocol] ?? 'default'}
                   sx={{ height: 20, fontSize: '0.7rem', fontWeight: 700 }} />
-            <Typography variant="body2" noWrap sx={{ fontFamily: MONO, fontWeight: 700 }}>
+            {/* 주소(특히 포트)는 대상을 알아보는 값이라 줄이지 않는다. 좁으면 뒤의 부가 설명이 먼저 잘린다. */}
+            <Typography variant="body2" sx={{ fontFamily: MONO, fontWeight: 700, whiteSpace: 'nowrap', flexShrink: 0 }}>
               {target.host}
               <Box component="span" sx={{ color: 'text.secondary' }}>:</Box>
               {target.port}
             </Typography>
-            <Typography variant="caption" color="textSecondary" noWrap>{detail}</Typography>
+            <Typography variant="caption" color="textSecondary" noWrap sx={{ minWidth: 0 }}>{detail}</Typography>
           </Stack>
         ) : (
           <Typography variant="body2" sx={{ fontFamily: MONO }} noWrap>{job.endpoint}</Typography>
