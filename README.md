@@ -293,7 +293,7 @@ docker compose -f docker-compose.internal.yml up -d
 > `{ "insecure-registries": ["192.168.70.114:5000"] }` 를 넣고 도커를 재시작해야 pull 이 된다.
 
 컨테이너 이미지에는 **curl 이 들어 있지 않다.** 폐쇄망에서 apt 미러까지 준비하지 않아도 되도록
-헬스체크를 JDK 내장 HTTP 클라이언트로 바꿨다(`deploy/HealthCheck.java`, 빌드 단계에서 컴파일).
+헬스체크는 앱 자체의 `--healthcheck` 모드(`java -jar app.jar --healthcheck`)로 JDK 내장 HTTP 클라이언트를 써서 확인한다.
 
 ## 로그 수신 테스트 서버 (log-sink)
 
