@@ -2,14 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
 import type { JobStatus } from '../api/types';
 
-/** 작업별 최근 샘플 보관 개수(그래프 5분치). */
-const MAX_POINTS = 300;
-
 export interface MetricsState {
-  /** 작업별 최신 상태. */
+  /** 작업별 최신 상태. 그래프를 없애면서 시계열은 더 쌓지 않는다(작업마다 5분치를 들고 있었다). */
   latest: Record<number, JobStatus>;
-  /** 작업별 시계열(그래프용). */
-  series: Record<number, JobStatus[]>;
   connected: boolean;
 }
 
@@ -19,7 +14,7 @@ export interface MetricsState {
  * 끊기면 지수 백오프로 재구독한다.
  */
 export function useMetricsStream(enabled: boolean): MetricsState {
-  const [state, setState] = useState<MetricsState>({ latest: {}, series: {}, connected: false });
+  const [state, setState] = useState<MetricsState>({ latest: {}, connected: false });
   const sourceRef = useRef<EventSource | null>(null);
   const retryRef = useRef(1000);
   const timerRef = useRef<number | null>(null);
@@ -33,13 +28,10 @@ export function useMetricsStream(enabled: boolean): MetricsState {
       if (jobs.length === 0) return;
       setState((prev) => {
         const latest = { ...prev.latest };
-        const series = { ...prev.series };
         for (const job of jobs) {
           latest[job.jobId] = job;
-          const points = series[job.jobId] ? [...series[job.jobId], job] : [job];
-          series[job.jobId] = points.length > MAX_POINTS ? points.slice(-MAX_POINTS) : points;
         }
-        return { latest, series, connected: true };
+        return { latest, connected: true };
       });
     };
 

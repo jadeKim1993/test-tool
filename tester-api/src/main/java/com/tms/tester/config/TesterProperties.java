@@ -30,10 +30,15 @@ public class TesterProperties {
 	public static class Jwt {
 
 		/**
-		 * HS256 서명키. 미설정 시 기동할 때마다 무작위로 생성한다
-		 * (재시작하면 기존 토큰이 무효화되므로 운영에서는 반드시 지정할 것).
+		 * HS256 서명키. 비워 두면 {@link #secretFile} 에 만들어 둔 키를 쓴다(없으면 만들어 저장한다).
 		 */
 		private String secret;
+
+		/**
+		 * 서명키를 지정하지 않았을 때 생성한 키를 보관하는 파일. H2 DB 와 같은 data 폴더라 개발 실행·Docker 볼륨·
+		 * 오프라인 설치 모두에서 재시작해도 남는다. 예전처럼 매번 새 키를 만들면 재시작마다 모두 로그아웃됐다.
+		 */
+		private String secretFile = "./data/jwt-secret";
 
 		/** 토큰 유효기간. */
 		private Duration ttl = Duration.ofHours(12);
@@ -47,6 +52,14 @@ public class TesterProperties {
 
 		public void setSecret(String secret) {
 			this.secret = secret;
+		}
+
+		public String getSecretFile() {
+			return secretFile;
+		}
+
+		public void setSecretFile(String secretFile) {
+			this.secretFile = secretFile;
 		}
 
 		public Duration getTtl() {

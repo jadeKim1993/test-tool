@@ -7,6 +7,9 @@ plugins {
 ext {
 	springBootVersion = '4.1.1'
 }
+// 하위 모듈 설정(subprojects) 안에서 springBootVersion 을 그냥 쓰면 Gradle 이 부모 프로젝트까지 암묵적으로 찾아가는데,
+// 이 방식은 Gradle 10 에서 오류가 된다. 스크립트 변수로 잡아 두고 그것을 쓴다.
+def springBootBomVersion = springBootVersion
 
 allprojects {
 	group = 'com.tms'
@@ -54,7 +57,7 @@ subprojects {
 
 	dependencyManagement {
 		imports {
-			mavenBom "org.springframework.boot:spring-boot-dependencies:${springBootVersion}"
+			mavenBom "org.springframework.boot:spring-boot-dependencies:${springBootBomVersion}"
 		}
 	}
 

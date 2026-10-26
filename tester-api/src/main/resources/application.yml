@@ -34,8 +34,10 @@ server:
 
 tester:
   jwt:
-    # 운영에서는 반드시 TESTER_JWT_SECRET 환경변수로 32자 이상 지정할 것.
+    # 비워 두면 secret-file 에 만들어 둔 키를 쓴다(없으면 만들어 저장 — 재시작해도 로그인 유지).
+    # 여러 대가 같은 키를 써야 하거나 키를 직접 관리하려면 TESTER_JWT_SECRET 으로 32자 이상 지정한다.
     secret: ${TESTER_JWT_SECRET:}
+    secret-file: ${TESTER_JWT_SECRET_FILE:./data/jwt-secret}
     ttl: PT12H
     refresh-threshold: PT2H
   engine:

@@ -50,7 +50,7 @@ export const useAuth = () => useContext(AuthContext);
 
 /** 전체 실행 상태를 헤더 배지와 각 화면이 공유한다. */
 const MetricsContext = createContext<ReturnType<typeof useMetricsStream>>({
-  latest: {}, series: {}, connected: false,
+  latest: {}, connected: false,
 });
 export const useMetrics = () => useContext(MetricsContext);
 

@@ -16,6 +16,7 @@ import com.tms.tester.common.TesterException;
 import com.tms.tester.config.TesterProperties;
 import com.tms.tester.metrics.JobMetricsDtos;
 import com.tms.tester.metrics.MetricsService;
+import com.tms.tester.generator.ValueWriterRegistry;
 import com.tms.tester.transport.LoadGenerator;
 import com.tms.tester.transport.MetricSample;
 import com.tms.tester.transport.NettyRuntime;
@@ -42,11 +43,15 @@ public class RunManager {
 	private final MetricsService metricsService;
 	private final RunHistoryService historyService;
 	private final TesterProperties properties;
+	/** 템플릿 함수 목록(확장 함수 포함). 저장 검증과 같은 것을 엔진에도 넘긴다. */
+	private final ValueWriterRegistry functions;
 
 	private final Map<Long, ActiveRun> runs = new ConcurrentHashMap<>();
 
 	public RunManager(NettyRuntime nettyRuntime, TransportRegistry transportRegistry,
-			MetricsService metricsService, RunHistoryService historyService, TesterProperties properties) {
+			MetricsService metricsService, RunHistoryService historyService, TesterProperties properties,
+			ValueWriterRegistry functions) {
+		this.functions = functions;
 		this.nettyRuntime = nettyRuntime;
 		this.transportRegistry = transportRegistry;
 		this.metricsService = metricsService;
@@ -112,7 +117,7 @@ public class RunManager {
 				context.selection(), context.eps(), context.workers(),
 				context.durationSec(), context.totalLimit(), context.overflow(), context.encoding());
 
-		LoadGenerator generator = new LoadGenerator(spec, nettyRuntime, transportRegistry);
+		LoadGenerator generator = new LoadGenerator(spec, nettyRuntime, transportRegistry, functions);
 		try {
 			generator.start();
 		}

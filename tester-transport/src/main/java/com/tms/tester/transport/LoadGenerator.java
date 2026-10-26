@@ -29,6 +29,8 @@ public final class LoadGenerator implements AutoCloseable {
 	private final RunSpec spec;
 	private final NettyRuntime runtime;
 	private final TransportRegistry registry;
+	/** 템플릿 함수 목록. 화면의 저장 검증과 같은 목록을 써야 저장된 템플릿이 전송에서도 컴파일된다. */
+	private final com.tms.tester.generator.ValueWriterRegistry functions;
 	private final SendStats stats = new SendStats();
 	private final AtomicLong sequence = new AtomicLong(1);
 
@@ -53,9 +55,15 @@ public final class LoadGenerator implements AutoCloseable {
 	private long lastSampleBytes;
 
 	public LoadGenerator(RunSpec spec, NettyRuntime runtime, TransportRegistry registry) {
+		this(spec, runtime, registry, com.tms.tester.generator.ValueWriterRegistry.standard());
+	}
+
+	public LoadGenerator(RunSpec spec, NettyRuntime runtime, TransportRegistry registry,
+			com.tms.tester.generator.ValueWriterRegistry functions) {
 		this.spec = spec;
 		this.runtime = runtime;
 		this.registry = registry;
+		this.functions = functions;
 		this.targetEps = spec.eps();
 		this.templates = List.copyOf(spec.templates());
 		this.templateGeneration = 1;
@@ -255,6 +263,10 @@ public final class LoadGenerator implements AutoCloseable {
 
 	public long endedAt() {
 		return endedAtMillis;
+	}
+
+	com.tms.tester.generator.ValueWriterRegistry functions() {
+		return functions;
 	}
 
 	public SendStats statistics() {

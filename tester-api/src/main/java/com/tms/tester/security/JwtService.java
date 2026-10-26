@@ -1,6 +1,10 @@
 package com.tms.tester.security;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
@@ -36,13 +40,7 @@ public class JwtService {
 
 		String secret = properties.getJwt().getSecret();
 		if (secret == null || secret.isBlank()) {
-			// 기동할 때마다 새 키를 만든다. 안전하지만 재시작하면 기존 토큰이 무효가 된다.
-			byte[] random = new byte[32];
-			new SecureRandom().nextBytes(random);
-			this.key = Keys.hmacShaKeyFor(random);
-			log.warn("tester.jwt.secret 이 설정되지 않아 임시 키를 생성했습니다. "
-					+ "재시작하면 기존 로그인 토큰이 모두 무효화됩니다. "
-					+ "운영에서는 TESTER_JWT_SECRET 환경변수를 지정하십시오.");
+			this.key = Keys.hmacShaKeyFor(loadOrCreateSecret(Path.of(properties.getJwt().getSecretFile())));
 		}
 		else {
 			byte[] bytes = secret.getBytes(StandardCharsets.UTF_8);
@@ -53,6 +51,44 @@ public class JwtService {
 			}
 			this.key = Keys.hmacShaKeyFor(bytes);
 			log.info("JWT 서명키 로드 완료 (유효기간 {}시간)", ttl.toHours());
+		}
+	}
+
+	/**
+	 * 서명키 파일을 읽는다. 없으면 무작위 키를 만들어 저장한다(소유자만 읽을 수 있게).
+	 * 저장할 수 없는 환경이면 이번 기동에만 쓰는 임시 키로 동작한다 — 기동을 막을 일은 아니다.
+	 */
+	private static byte[] loadOrCreateSecret(Path file) {
+		try {
+			if (Files.isRegularFile(file)) {
+				byte[] stored = Base64.getDecoder().decode(Files.readString(file, StandardCharsets.US_ASCII).trim());
+				if (stored.length >= 32) {
+					log.info("JWT 서명키를 파일에서 읽었습니다: {}", file.toAbsolutePath().normalize());
+					return stored;
+				}
+				log.warn("서명키 파일이 너무 짧아 새로 만듭니다: {}", file);
+			}
+			byte[] random = new byte[48];
+			new SecureRandom().nextBytes(random);
+			if (file.getParent() != null) {
+				Files.createDirectories(file.getParent());
+			}
+			Files.writeString(file, Base64.getEncoder().encodeToString(random) + "\n", StandardCharsets.US_ASCII);
+			try {
+				Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rw-------"));
+			}
+			catch (UnsupportedOperationException e) {
+				// POSIX 권한이 없는 파일시스템(Windows 등). 파일은 그대로 쓴다.
+			}
+			log.info("JWT 서명키를 만들어 저장했습니다: {} (재시작해도 로그인이 유지됩니다)", file.toAbsolutePath().normalize());
+			return random;
+		}
+		catch (IOException | IllegalArgumentException e) {
+			byte[] random = new byte[32];
+			new SecureRandom().nextBytes(random);
+			log.warn("서명키 파일({})을 쓸 수 없어 임시 키를 씁니다 — 재시작하면 모두 다시 로그인해야 합니다: {}",
+					file, e.getMessage());
+			return random;
 		}
 	}
 

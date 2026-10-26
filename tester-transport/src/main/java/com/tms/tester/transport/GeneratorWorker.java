@@ -65,7 +65,12 @@ final class GeneratorWorker implements Runnable {
 	private final OverflowPolicy overflow;
 
 	private final RenderContext context;
-	private final TemplateCompiler compiler = new TemplateCompiler();
+	/**
+	 * 엔진용 컴파일러. 함수 목록은 작업을 띄운 쪽(RunManager)이 넘긴 것을 쓴다 — 예전엔 기본 목록으로만 만들어,
+	 * 함수를 확장(ValueWriterFactory 빈)하면 저장은 되는데 전송에서 "알 수 없는 함수"로 실패했다.
+	 * 엄격 모드는 끈다(이미 저장된 옛 템플릿이 기동에 실패하지 않게 — TemplateCompiler 참고).
+	 */
+	private final TemplateCompiler compiler;
 
 	private CompiledTemplate[] templates = new CompiledTemplate[0];
 	private int[] cumulativeWeights = new int[0];
@@ -95,6 +100,7 @@ final class GeneratorWorker implements Runnable {
 		this.workerCount = generator.workerCount();
 		this.overflow = spec.overflow();
 		this.context = new RenderContext(new XorShiftRandom(System.nanoTime() * 31L + index), sequence);
+		this.compiler = new TemplateCompiler(generator.functions());
 	}
 
 	@Override
