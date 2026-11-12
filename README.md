@@ -218,7 +218,8 @@ git clone https://github.com/jadeKim1993/test-tool.git && cd test-tool
   `install.sh` 를 그대로 실행한 뒤 일반화(서명키·SSH 호스트 키·machine-id·cloud-init 상태·로그 제거)하고 압축한다. 서명키는 서버마다 첫 부팅 때 새로 만든다.
 - **검증**(`./deploy/openstack/test.sh`): 만든 이미지를 OpenStack config drive 형식으로 (차례로) 두 대 띄워 cloud-init·서비스·일반화·실제 전송(E2E)·
   서버마다 다른 서명키·재부팅 후 유지 등 41개 항목을 점검한다. `--no-test` 로 생략.
-- **필요한 것**: 처음 빌드 때 인터넷(Docker Hub, Ubuntu apt·클라우드 이미지, Maven·npm, nodejs.org·Adoptium), 디스크 약 8GB.
+- **필요한 것**: 처음 빌드 때 인터넷(Docker Hub, Ubuntu apt·클라우드 이미지, Maven·npm, nodejs.org·Adoptium), 디스크 약 8GB, 메모리 여유 약 3GB
+  (메모리를 많이 쓰는 다른 컨테이너와 같은 장비에서 돌리면 그쪽이 메모리 부족으로 죽을 수 있다 — 빌드 전용 장비 권장).
 - **시간**: macOS(Docker Desktop)는 KVM 이 없어 x86_64 를 에뮬레이션한다 — 실측 원클릭 전체 약 39분(빌드 18~21분 + 검증 19~20분). 리눅스 x86_64 + KVM
   호스트면 `/dev/kvm` 을 자동으로 넘겨 훨씬 빠르다(몇 분 예상, 측정 안 함).
 - **폐쇄망**: 베이스 이미지를 `.runtime-cache/openstack/` 에 넣어 두거나 `--base-image`, 빌드 VM apt 는 `--apt-mirror` 또는

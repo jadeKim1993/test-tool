@@ -41,6 +41,7 @@
 | bash, coreutils, git(저장소 받기·커밋 기록) | Ubuntu 기본 |
 | 인터넷 — Docker Hub(ubuntu:24.04), Ubuntu apt, nodejs.org, Maven Central·npm·Gradle 배포본, Adoptium·nodejs.org(설치본용 JRE·Node), cloud-images.ubuntu.com | 처음 빌드 때. 폐쇄망은 §7 |
 | 디스크 약 8GB(저장소 쪽 결과물·캐시 약 3GB + Docker 쪽 빌더 이미지·작업 디스크 약 5GB) | 끝나면 `clean.sh` |
+| **메모리 여유 약 3GB** — 빌드 VM 2GB(`--memory`) + QEMU, 검증은 서버 한 대씩 2GB. 호스트에 JDK 가 있어 설치본을 호스트 Gradle 로 만들면 Gradle 데몬 약 0.6GB 가 빌드 내내 더 남는다 | 같은 Docker 에서 메모리를 많이 쓰는 서비스가 돌고 있으면 그쪽이 메모리 부족으로 죽을 수 있다(§10) — 빌드 전용 장비 권장 |
 | `/dev/kvm`(있으면 자동 사용 — 빠르다) | 선택 |
 
 | 결과물 (`build/openstack/`) | 내용 |
@@ -582,6 +583,7 @@ fetch)으로 백엔드 `/actuator/health`·화면 `/health`·화면 경유 `/act
 | 하네스 | **41개 통과 / 실패 0** (18분 39초, 20분 20초 — 두 번). 서버 부팅→SSH 113~143초, 앱 응답까지 추가 2~4분, 재부팅 약 2분 |
 | E2E 전송 | 제한 1000건 → 보냄 = 도착(1004 / 1056 / 1020 — 실행마다 배치 경계에 따라 다름), 버림·오류 0, Netty epoll |
 | 일반화 | 두 서버의 서명키·machine-id·SSH 호스트 키 모두 다름, A 의 토큰을 B 가 401 로 거부. 재부팅 후 서명키·토큰·저장된 작업 유지 |
+| **Ubuntu 24.04 + JDK 21 + Node 24 에서 `./gradlew openstackImage`** | 같은 흉내 컨테이너에 apt 의 `openjdk-21-jdk-headless` 와 nodejs.org 배포본을 설치하고 실행 → 호스트 Gradle 로 `offlineBundle` 성공, `openstackImage` 가 `build.sh --skip-bundle` 로 넘겨 빌더 컨테이너·빌드 VM 의 `install.sh` 까지 진행한 것을 확인했다. **이미지 빌드를 끝까지 보지는 않고 중단했다** — 같은 Docker VM 에서 돌던 다른 서비스(elasticsearch)가 메모리 부족으로 재시작을 반복해서다(§10). 넘겨받은 뒤의 단계는 `build.sh` 와 같고, 그 경로는 위에서 세 번 끝까지 통과했다 |
 | **Docker 만 있는 Ubuntu 24.04** | Ubuntu 24.04 컨테이너(Docker CLI·git 만, Java·npm 없음, 일반 사용자 UID)에서 새로 받은 저장소로 `./deploy/openstack/build.sh` → **exit 0, 41개 통과, 54분 27초**. 설치본은 자동으로 빌더 컨테이너에서 만들어졌다(처음 실행이라 Gradle·npm 의존성 다운로드 포함 — macOS 바인드 마운트라 특히 느렸다). 같은 환경에서 `./gradlew openstackImage` 는 Java 가 없어 시작하지 못함을 확인 |
 
 리눅스 x86_64 + KVM 에서는 측정하지 않았다. 부팅·JVM 기동이 에뮬레이션보다 수십 배 빨라 빌드·검증이 각각 몇 분일 것으로 본다
@@ -609,6 +611,9 @@ fetch)으로 백엔드 `/actuator/health`·화면 `/health`·화면 경유 `/act
 - 이미지에서 apt 목록을 지웠다 — 인스턴스에서 패키지를 설치하려면 먼저 `sudo apt update`. 폐쇄망 인스턴스에서는 unattended-upgrades 가
   저장소에 닿지 못해 조용히 실패한다(동작에는 영향 없음).
 - `/opt/tester/data` 는 루트 디스크에 있다. 서버를 다시 만들어도 데이터를 남기려면 Cinder 볼륨을 붙여 그 경로에 마운트한다(자동화하지 않음).
+- **메모리를 많이 쓰는 다른 컨테이너와 같은 장비에서 돌리면 그쪽이 죽을 수 있다.** 검증 중에 실제로 겪었다 — Docker Desktop VM(7.7GB, 스왑 1GB)에서
+  elasticsearch(힙 약 4GB)와 함께 빌드 VM(2GB) + 호스트 Gradle 데몬(약 0.6GB)이 돌자 스왑이 차고 elasticsearch 가 30분 동안 21번 재시작했다.
+  빌드를 멈추자 바로 안정됐다. 빌드 전용 장비에서 돌리거나, 큰 서비스를 잠시 멈추거나, `--memory` 를 줄인다(2048 미만은 권하지 않는다 — 이미지 min_ram).
 - **HTTP 프록시만으로 인터넷에 나가는 빌드 장비는 지원하지 않는다.** 빌드 VM 의 apt 까지 프록시를 넘기지 않는다 — 미러(`--apt-mirror`,
   `--base-url-root`, 내부 레지스트리, 사내 Maven·npm)나 `--offline` 을 쓴다.
 - **snap 으로 설치한 Docker** 는 `/home` 밖의 경로를 마운트하지 못한다 — 저장소를 홈 디렉터리 아래에 둔다.
