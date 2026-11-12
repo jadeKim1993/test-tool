@@ -427,22 +427,26 @@ else
 	"$PREFIX/bin/testerctl" start >/dev/null
 fi
 
+# 기동 대기 시간. 보통 수 초면 뜬다. 에뮬레이션(QEMU TCG)으로 이미지를 구울 때처럼 아주 느린 장비에서는
+# 환경변수 TESTER_START_TIMEOUT(초)으로 늘린다(deploy/openstack 이미지 빌더가 쓴다).
+START_TIMEOUT="${TESTER_START_TIMEOUT:-180}"
+case "$START_TIMEOUT" in '' | *[!0-9]*) START_TIMEOUT=180 ;; esac
 echo -n "      백엔드 기동 대기 "
-for i in $(seq 1 180); do
+for i in $(seq 1 "$START_TIMEOUT"); do
 	if "$PREFIX/jre/bin/java" -jar "$PREFIX/app/tester-api.jar" --healthcheck \
 			"http://127.0.0.1:$TESTER_API_PORT/actuator/health" >/dev/null 2>&1; then
 		echo " OK"
 		break
 	fi
-	[ "$i" -eq 180 ] && { echo; die "백엔드가 180초 안에 뜨지 않았습니다. testerctl logs api 로 확인하세요."; }
+	[ "$i" -eq "$START_TIMEOUT" ] && { echo; die "백엔드가 ${START_TIMEOUT}초 안에 뜨지 않았습니다. testerctl logs api 로 확인하세요."; }
 	echo -n "."
 	sleep 1
 done
-if ! "$PREFIX/node/bin/node" -e "fetch('http://127.0.0.1:$TESTER_WEB_PORT/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then
-	sleep 2
-	"$PREFIX/node/bin/node" -e "fetch('http://127.0.0.1:$TESTER_WEB_PORT/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" \
-		|| die "화면 서버가 응답하지 않습니다. testerctl logs web 으로 확인하세요."
-fi
+for i in $(seq 1 30); do
+	"$PREFIX/node/bin/node" -e "fetch('http://127.0.0.1:$TESTER_WEB_PORT/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" && break
+	[ "$i" -eq 30 ] && die "화면 서버가 응답하지 않습니다. testerctl logs web 으로 확인하세요."
+	sleep 1
+done
 info "화면 서버 OK"
 
 step "완료"

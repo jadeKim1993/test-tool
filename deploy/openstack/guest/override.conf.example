@@ -1,0 +1,25 @@
+# 테스트 도구 — 인스턴스별 설정 (OpenStack 이미지)
+#
+# 이 파일을 /etc/tester/override.conf 로 두면 부팅할 때마다 tester-instance-init 이 아래 값을
+# /opt/tester/conf/tester.conf 에 덮어쓴다. KEY=VALUE 한 줄에 하나, 값은 그대로 쓰인다(따옴표 포함).
+#
+# 서버를 만들 때 user-data 로 넣는 것이 보통이다:
+#
+#   #cloud-config
+#   write_files:
+#     - path: /etc/tester/override.conf
+#       content: |
+#         TESTER_WEB_PORT=8000
+#         JAVA_OPTS="-Xms1g -XX:MaxRAMPercentage=70"
+#
+# 이미 떠 있는 서버에서 바꿨다면:
+#   sudo systemctl restart tester-instance-init && sudo testerctl restart
+
+# 화면 포트(보안 그룹에서 이 포트를 열어야 한다). 기본 80
+#TESTER_WEB_PORT=8000
+
+# 백엔드 JVM 옵션. 이미지 기본값은 VM 메모리의 50% 를 힙 상한으로 쓴다
+#JAVA_OPTS="-Xms256m -XX:MaxRAMPercentage=50"
+
+# 로그인 서명키. 비워 두면 인스턴스마다 새로 만든다. 여러 대가 같은 키를 써야 할 때만 적는다(32자 이상)
+#TESTER_JWT_SECRET=

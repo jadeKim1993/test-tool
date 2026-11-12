@@ -1,0 +1,15 @@
+[Unit]
+Description=테스트 도구 인스턴스 초기화 (인스턴스별 서명키, /etc/tester/override.conf)
+# cloud-init 이 instance-id 를 정하고 user-data 의 write_files(override.conf)를 쓴 다음에 돈다.
+# (cloud-init 24.4 부터 cloud-init.service 가 cloud-init-network.service 로 바뀌었다 — 없는 쪽은 무시된다)
+After=local-fs.target cloud-init-local.service cloud-init.service cloud-init-network.service
+Before=tester-api.service tester-web.service
+ConditionPathExists=/opt/tester/conf/tester.conf
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/tester-instance-init
+
+[Install]
+WantedBy=multi-user.target

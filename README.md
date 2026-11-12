@@ -92,6 +92,7 @@ java -jar tester-api/build/libs/tester-api.jar
 | **인터넷망 (기본)** | Docker — 아래 §Docker 배포 |
 | **내부망, 인터넷·Docker 없음** | 오프라인 원클릭 설치본 — 아래 §내부망 오프라인 설치 |
 | 내부망, 사내 미러·레지스트리·Docker 있음 | 내부 레지스트리(192.168.70.114) 이미지 — 아래 §내부망 개발·Docker 배포 |
+| **OpenStack** | Ubuntu 24.04 qcow2 이미지 — 아래 §OpenStack 이미지 |
 
 ## Docker 배포
 
@@ -190,6 +191,40 @@ sudo ./install.sh            # → http://<서버IP>  (화면 포트 변경: --w
   치환, 로컬 파일 경로 가능), 인터넷망에서 받은 파일을 `.runtime-cache/` 에 같은 이름으로 넣어 둔다.
   버전은 `jreVersion=jdk-21.0.13+9`, `nodeVersion=24.22.1` 로 고정돼 있다. ARM 서버는 `-PbundleArch=aarch64`.
 - 설치본 안의 `README.txt` 에 서버 담당자용 안내가 있다.
+
+## OpenStack 이미지 (Ubuntu 24.04 qcow2)
+
+오프라인 설치본을 Ubuntu 24.04 클라우드 이미지에 미리 설치해 둔 **qcow2 이미지**를 만든다. 서버를 만들면 바로
+`http://<인스턴스 IP>` 로 접속된다. 빌드 장비에는 **Docker 만** 있으면 된다(예: Ubuntu 24.04 + Docker) — QEMU, 설치본을 만들
+JDK 21·Node 24 까지 모두 빌더 컨테이너 안에 있다. 설계·동작 원리·대시보드 절차는 [docs/openstack-image.md](docs/openstack-image.md).
+
+```bash
+git clone https://github.com/jadeKim1993/test-tool.git && cd test-tool
+./deploy/openstack/build.sh       # 원클릭: 빌더 이미지 → 설치본 → 컨테이너 안 QEMU 로 굽기 → qcow2 → 하네스 검증
+./deploy/openstack/clean.sh       # 끝나면 정리(검증 보고서·캐시·빌더 이미지. qcow2 는 남김, --all 이면 모두)
+```
+
+결과물은 `build/openstack/` — `tester-<버전>-ubuntu-24.04-amd64.qcow2`(약 900MB), `.sha256`, 매니페스트 `.json`(Glance 속성·베이스
+이미지 serial), 검증 보고서 `harness/<이름>/report.txt`·`junit.xml`. `build.sh` 가 끝에 **대시보드에 넣을 값**을 보여 준다.
+
+- **`./gradlew openstackImage` 는 Docker 만 있는 장비에서는 돌지 않는다** — Gradle 이 실행되려면 호스트에 Java 가 필요하다.
+  Docker 만 있으면 `build.sh` 를 쓴다(호스트에 JDK·npm 이 있으면 호스트에서, 없으면 컨테이너에서 설치본을 만든다). Gradle 로 부르려면
+  JDK 21(`sudo apt install -y openjdk-21-jdk-headless`)과 Node 22+(nodejs.org 배포본)를 설치한다 — 명령은 문서 §0.
+- **올리기(대시보드)**: 프로젝트 → 컴퓨트 → 이미지 → 이미지 생성 — 포맷 **QCOW2**, 아키텍처 `x86_64`, 최소 디스크 `8`GB, 최소 RAM `2048`MB,
+  메타데이터 `hw_qemu_guest_agent=yes`·`os_distro=ubuntu`·`os_version=24.04`. CLI 로 올리려면 `./deploy/openstack/upload.sh`.
+- **서버 만들기(대시보드)**: 키 페어 필수(비밀번호 없음, `ubuntu` 로 SSH), 보안 그룹 인바운드 TCP 22·80, 플레이버 RAM 2GB·디스크 8GB 이상
+  (권장 vCPU 2·RAM 4GB·디스크 20GB). 포트·JVM 옵션·NTP·콘솔 비밀번호는 "사용자 정의 스크립트"(user-data) 로 — 예시는 문서 §5.4.
+- **빌드**: 클라우드 이미지를 받아(SHA256 대조, `.runtime-cache/openstack/` 에 캐시) QEMU 로 부팅하고, 빌드 VM 안에서 오프라인 설치본의
+  `install.sh` 를 그대로 실행한 뒤 일반화(서명키·SSH 호스트 키·machine-id·cloud-init 상태·로그 제거)하고 압축한다. 서명키는 서버마다 첫 부팅 때 새로 만든다.
+- **검증**(`./deploy/openstack/test.sh`): 만든 이미지를 OpenStack config drive 형식으로 (차례로) 두 대 띄워 cloud-init·서비스·일반화·실제 전송(E2E)·
+  서버마다 다른 서명키·재부팅 후 유지 등 41개 항목을 점검한다. `--no-test` 로 생략.
+- **필요한 것**: 처음 빌드 때 인터넷(Docker Hub, Ubuntu apt·클라우드 이미지, Maven·npm, nodejs.org·Adoptium), 디스크 약 8GB.
+- **시간**: macOS(Docker Desktop)는 KVM 이 없어 x86_64 를 에뮬레이션한다 — 실측 원클릭 전체 약 39분(빌드 18~21분 + 검증 19~20분). 리눅스 x86_64 + KVM
+  호스트면 `/dev/kvm` 을 자동으로 넘겨 훨씬 빠르다(몇 분 예상, 측정 안 함).
+- **폐쇄망**: 베이스 이미지를 `.runtime-cache/openstack/` 에 넣어 두거나 `--base-image`, 빌드 VM apt 는 `--apt-mirror` 또는
+  `--offline`(게스트 에이전트 없이), 빌더 이미지는 `docker save/load` + `TESTER_BUILDER_SKIP_BUILD=1`, 설치본 의존성은 `TESTER_REPO_URL`·`NPM_REGISTRY` 등.
+- 옵션: `--arch arm64`(미검증), `--disk-size 8G`(= 최소 디스크), `--timezone Asia/Seoul`, `--base-serial 20261017`(베이스 고정), `--skip-bundle` 등 —
+  `./deploy/openstack/build.sh --help`.
 
 ## 내부망 개발·Docker 배포 (사내 Maven/npm 미러·레지스트리가 있는 경우)
 

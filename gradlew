@@ -137,7 +137,11 @@ else
         die "ERROR: JAVA_HOME is not set and no 'java' command could be found in your PATH.
 
 Please set the JAVA_HOME variable in your environment to match the
-location of your Java installation."
+location of your Java installation.
+
+[테스트 도구] Gradle 은 호스트에 Java 가 있어야 실행된다(빌드에는 JDK 21 + Node 22+ 필요).
+  OpenStack 이미지만 만들 거라면 Docker 만으로: ./deploy/openstack/build.sh
+  (Ubuntu: sudo apt install -y openjdk-21-jdk-headless, Node 22+ 는 nodejs.org 배포본 — docs/openstack-image.md §0)"
     fi
 fi
 
