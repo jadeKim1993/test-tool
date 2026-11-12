@@ -39,6 +39,7 @@
 | 성능 벤치마크 | `./gradlew perf` (반드시 단독 실행 — §16.7) |
 | 전체 스택 Docker 배포 | `docker compose up -d --build` (루트) → 자세한 내용은 README.md "Docker 배포" 절 참고 |
 | 로그 수신 테스트 서버 | `cd tools/log-sink && docker compose up -d --build` → http://localhost:8090 |
+| OpenStack qcow2 이미지 빌드 + 검증 | `./deploy/openstack/build.sh` → 설계·사용법은 [openstack-image.md](openstack-image.md) (§16.29) |
 
 운영 관점 사용법(배포, 환경변수, 트러블슈팅)은 이 문서가 아니라 **README.md 가 1차 출처**다.
 이 문서(design.md)는 "왜 이렇게 만들었나 / 내부 구조가 어떤가"를 다룬다.
@@ -919,6 +920,9 @@ sink.jar --tcp --port 9000 --report 1s`), 실제로 필요해진 시점의 요�
 ---
 
 ## 13. 운영 / 배포
+
+> 이 절 이후에 추가된 배포 형태: 내부망 오프라인 설치본(§16.19), OpenStack qcow2 이미지(§16.29 —
+> 별도 문서 [openstack-image.md](openstack-image.md)).
 
 배포 방법은 두 가지다 — **직접 설치**(jar + nginx, 이 절에서 다룸)와 **Docker**(§16.8,
 README.md "Docker 배포" 절이 1차 출처). 둘 중 뭘 먼저 볼지 모르겠다면 Docker 쪽이 더 짧고
@@ -1809,6 +1813,25 @@ JVM 이 그대로 따른다). 두 compose 파일의 backend 에 `TZ: ${TZ:-Asia/
 원래 크기로 돌아간다. 넓힌 카드 id 는 브라우저에 기억한다(`tester.wideJobs`). 처음에는 카드 오른쪽 끝을 마우스로 끌어 전체 카드
 폭을 바꾸게 했으나, 버튼 한 번으로 늘어나는 편이 쉽다는 요청에 따라 바꿨다. 좁은 카드에서도 받는 곳 주소(포트 포함)는 줄이지
 않고 뒤의 부가 설명(프레이밍 등)이 먼저 잘린다.
+
+### 16.29 OpenStack qcow2 이미지 (Docker 안 QEMU 로 빌드 · 하네스)
+
+배포 형태에 **OpenStack 이미지**를 더했다. 설계·사용법·결정 이력은 분량이 커서 별도 문서
+[openstack-image.md](openstack-image.md) 에 둔다. 여기에는 애플리케이션 쪽에 닿는 것만 적는다.
+
+- **설치 경로는 하나.** 이미지 안 설치도 오프라인 설치본의 `install.sh` 를 그대로 실행한다(빌드 VM 을 QEMU 로 실제 부팅). 이미지 전용
+  차이(서명키 없음·JVM 메모리 비율·시간대·인스턴스 초기화 서비스)는 설치 뒤에 덧씌우는 설정뿐이다.
+- **`install.sh` 변경 하나:** 기동 대기 시간을 `TESTER_START_TIMEOUT`(초)으로 늘릴 수 있다. 기본 180초 그대로라 서버 설치 동작은 같다.
+  에뮬레이션(TCG)으로 이미지를 구울 때 Spring Boot 기동이 수 분 걸려 필요했다. 화면 서버 확인도 2초 한 번 재시도에서 최대 30초 반복으로 바꿨다.
+- **서명키는 이미지에 없다.** seal 이 `TESTER_JWT_SECRET` 을 비우고, 인스턴스 첫 부팅에 `tester-instance-init`(→ `tester-api`·`tester-web`
+  드롭인으로 먼저 실행)이 cloud-init instance-id 기준으로 새로 만든다. 플래그 파일이나 §16.27 의 `data/jwt-secret` 자동 생성에 맡기지 않은
+  이유는 스냅샷 — 둘 다 스냅샷에 복제되지만 instance-id 는 서버마다 다르다.
+- **인스턴스별 설정**은 `/etc/tester/override.conf`(user-data `write_files`) → 매 부팅 `tester.conf` 에 덮어쓴다.
+- **빌드 장비에는 Docker 만.** 빌더 이미지에 JDK 21·Node 24 를 넣어, 호스트에 JDK·npm 이 없으면 `build.sh` 가 설치본(`offlineBundle`)도
+  컨테이너 안에서 만든다(저장소를 같은 절대 경로·호스트 UID 로 마운트, Gradle·npm 캐시는 `.runtime-cache/gradle-docker`). `./gradlew openstackImage`
+  는 Gradle 자체가 Java 를 요구하므로 JDK 가 있는 개발 장비용이다. Docker 만 있는 Ubuntu 24.04 를 흉내 낸 컨테이너(Java·npm 없음, 일반 사용자)에서
+  깨끗한 저장소로 원클릭을 돌려 확인했다.
+- `.gitattributes` 에 `*.sh`·`deploy/**` 를 LF 로 고정했다 — 리눅스 서버·VM 안에서 실행되는 파일이 윈도 체크아웃에서 CRLF 가 되면 깨진다.
 
 ## 부록 A. 주요 인터페이스 (실제 코드)
 

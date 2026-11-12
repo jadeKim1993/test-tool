@@ -1,3 +1,6 @@
 /gradlew text eol=lf
 *.bat text eol=crlf
 *.jar binary
+# 리눅스 서버·VM 안에서 실행되는 스크립트·유닛·설정 — 윈도에서 받아도 CRLF 가 되면 안 된다
+*.sh text eol=lf
+deploy/** text eol=lf

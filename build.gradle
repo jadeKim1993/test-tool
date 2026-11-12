@@ -296,3 +296,26 @@ tasks.register('offlineBundle', Exec) {
 		logger.lifecycle("[offline] ${file} (${String.format('%.1f', file.length() / 1e6)} MB)")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// OpenStack 이미지 (Ubuntu 24.04 qcow2) — docs/openstack-image.md
+//
+//   ./gradlew openstackImage                                  # 설치본 → qcow2 → 하네스 검증
+//   ./gradlew openstackImage -PimageArgs="--no-test --timezone UTC"
+//   ./gradlew openstackImage -PbundleArch=aarch64             # arm64 이미지
+//
+// deploy/openstack/build.sh 를 그대로 부른다(설치본은 이 태스크가 호스트에서 먼저 만들므로 --skip-bundle).
+// Gradle 로 부르는 것이라 호스트에 JDK 21·npm 이 필요하다(개발 장비용). **Docker 만 있는 장비에서는
+// ./deploy/openstack/build.sh 를 직접 실행한다** — 설치본까지 빌더 컨테이너 안에서 만든다.
+// ---------------------------------------------------------------------------
+tasks.register('openstackImage', Exec) {
+	description = 'OpenStack qcow2 이미지 빌드 + 검증 (JDK·npm·Docker 필요. Docker 만 있으면 deploy/openstack/build.sh)'
+	group = 'distribution'
+	dependsOn 'offlineBundle'
+	def imageArgs = providers.gradleProperty('imageArgs').getOrElse('').trim()
+	def args = ['bash', 'deploy/openstack/build.sh', '--skip-bundle', '--arch', bundleArch == 'aarch64' ? 'arm64' : 'amd64']
+	if (imageArgs) {
+		args += imageArgs.split(/\s+/).toList()
+	}
+	commandLine args
+}
